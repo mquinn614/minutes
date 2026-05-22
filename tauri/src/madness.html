@@ -89,7 +89,27 @@
     button.primary { background: var(--accent); color: #fff; border-color: transparent; }
     @media (prefers-color-scheme: dark) { button.primary { color: #0D0D0B; } }
     button.primary:hover { background: var(--accent-hover); }
-    label.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+    button.primary.recording { background: var(--red); color: #fff; }
+    button.primary.recording:hover { background: var(--red); filter: brightness(1.1); }
+    .rec-timer { font-family: 'Geist Mono', monospace; font-size: 12px; opacity: 0.85; margin-left: 6px; }
+    button.busy { opacity: 0.6; pointer-events: none; }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+      display: none; align-items: center; justify-content: center; z-index: 50;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      background: var(--bg-elevated); border: 1px solid var(--border-mid); border-radius: 14px;
+      padding: 24px; max-width: 400px; text-align: center;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+    }
+    .modal h3 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 20px; margin-bottom: 8px; }
+    .modal p { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5; }
+    .modal .diag { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-tertiary); }
+    .modal .actions { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+    .modal a { color: var(--accent); font-size: 12px; text-decoration: none; cursor: pointer; }
+    .modal a:hover { text-decoration: underline; }
 
     .status {
       font-family: 'Geist Mono', monospace;
@@ -119,7 +139,7 @@
       0% { background-color: var(--accent); }
       100% { background-color: rgba(0, 0, 0, 0); }
     }
-    .slot.flash { animation: flashPulse 1.1s ease-out; }
+    .slot.flash { animation: flashPulse 0.9s ease-out; }
 
     main { flex: 1; display: flex; min-height: 0; }
 
@@ -217,9 +237,9 @@
     <h1>Minutes <span style="font-style:italic">Madness</span></h1>
     <span class="spacer"></span>
     <select id="bracket-select" title="Choose a bracket"></select>
+    <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
+    <button id="score-btn" title="Score once against the latest transcript">Score now</button>
     <button id="refresh-btn" title="Reload from disk">Refresh</button>
-    <button id="score-btn" class="primary" title="Score against the live transcript">Score vs live</button>
-    <label class="toggle"><input type="checkbox" id="auto-toggle" /> Auto-score live</label>
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
   <div class="recent-bar" id="recent-bar"></div>
@@ -235,6 +255,18 @@
       <div id="mentions"></div>
     </aside>
   </main>
+
+  <div class="modal-backdrop" id="model-prompt">
+    <div class="modal">
+      <h3>Speech model needed</h3>
+      <p>Live transcription needs the Whisper <b>base</b> model (~142&nbsp;MB). It downloads once and stays on this Mac.</p>
+      <p class="diag" id="model-diag"></p>
+      <div class="actions">
+        <button class="primary" id="dl-model-btn">Download base model</button>
+        <a id="model-link">Where this comes from ↗</a>
+      </div>
+    </div>
+  </div>
 
   <script>
     const SEED_ORDER = [1, 16, 8, 9, 5, 12, 4, 13, 6, 11, 3, 14, 7, 10, 2, 15];
@@ -269,14 +301,27 @@
         },
       };
     }
+    let mockLiveStart = 0;
     function mockInvoke(cmd) {
-      if (cmd === 'cmd_madness_list') return [{ slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', players: 2, scored: true, champion: 'AI' }];
-      return mockGame();
+      switch (cmd) {
+        case 'cmd_madness_list':
+          return [{ slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', players: 2, scored: true, champion: 'AI' }];
+        case 'cmd_live_transcript_status':
+          return { active: mockLiveStart > 0, line_count: mockLiveStart > 0 ? 3 : 0, duration_secs: mockLiveStart > 0 ? (Date.now() - mockLiveStart) / 1000 : 0, audioLevel: 0 };
+        case 'cmd_start_live_transcript': mockLiveStart = Date.now(); return null;
+        case 'cmd_stop_live_transcript': mockLiveStart = 0; return null;
+        case 'cmd_needs_setup': return { hasModel: true };
+        case 'cmd_download_model': return 'ok';
+        case 'cmd_open_file': return null;
+        default: return mockGame(); // cmd_madness_show / cmd_madness_score
+      }
     }
     const ROUND_NAMES = { 1: 'Round of 16', 2: 'Quarterfinals', 3: 'Semifinals', 4: 'Final' };
 
     let current = null;       // current bracket game object
-    let autoTimer = null;
+    let recording = false;    // a live recording is in progress
+    let liveTimer = null;     // 1s tick: refresh status + auto-score
+    let startupAt = 0;        // when recording started (for failure detection)
     let selectedName = null;  // player whose picks are overlaid on the bracket
     let selectedPicks = null;
     let prevCounts = null;    // mention counts from the previous score, for diffing
@@ -481,7 +526,7 @@
       const res = game.results;
       const total = res ? res.total_mentions : 0;
       const scored = res ? `<span class="badge">scored</span>` : `<span class="badge">projected</span>`;
-      const live = autoTimer ? `<span class="badge live">● auto-scoring live</span>` : '';
+      const live = recording ? `<span class="badge live">● recording</span>` : '';
       s.innerHTML = `${scored} ${live} <span>“${game.title}”</span> <span>${game.terms.length} seeds</span> <span>${game.players.length} players</span> <span>${total} total mentions</span>`;
     }
 
@@ -544,32 +589,151 @@
       render(game);
     }
 
+    function countsEqual(a, b) {
+      if (!a || !b) return false;
+      for (const s of SEED_ORDER) if ((a[s] || 0) !== (b[s] || 0)) return false;
+      return true;
+    }
+
     async function scoreLive() {
       if (!current) return;
       try {
         const game = await invoke('cmd_madness_score', { slug: current.slug, from: null });
+        // Skip the heavy re-render (and the flash) when nothing actually changed.
+        if (current.results && game.results && countsEqual(game.results.counts, current.results.counts)) {
+          current = game;
+          return;
+        }
         render(game);
       } catch (e) {
         document.getElementById('status').textContent = 'Score failed: ' + e;
       }
     }
 
+    // ── Recording controls ──────────────────────────────────────
+
+    function fmtTimer(secs) {
+      secs = Math.max(0, Math.floor(secs || 0));
+      return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+    }
+
+    function updateRecordButton(status) {
+      const btn = document.getElementById('record-btn');
+      if (recording) {
+        btn.className = 'primary recording';
+        btn.innerHTML = `■ Stop recording<span class="rec-timer">${fmtTimer(status && status.duration_secs)}</span>`;
+      } else {
+        btn.className = 'primary';
+        btn.innerHTML = '● Start recording';
+      }
+    }
+
+    async function startRecording() {
+      if (!current) return;
+      try {
+        await invoke('cmd_start_live_transcript');
+      } catch (e) {
+        // A session already running (e.g. from the CLI) is fine — just attach to it.
+        if (!/active|already/i.test(String(e))) {
+          document.getElementById('status').textContent = 'Could not start recording: ' + e;
+          return;
+        }
+      }
+      recording = true;
+      startupAt = Date.now();
+      hideModelPrompt();
+      updateRecordButton();
+      renderStatus(current);
+      startLiveTimer();
+    }
+
+    async function stopRecording() {
+      recording = false;
+      stopLiveTimer();
+      try { await invoke('cmd_stop_live_transcript'); } catch (e) { /* may already be stopped */ }
+      updateRecordButton();
+      await scoreLive(); // final score
+      if (current) renderStatus(current);
+    }
+
+    function startLiveTimer() {
+      if (liveTimer) return;
+      liveTimer = setInterval(liveTick, 1000);
+      liveTick();
+    }
+    function stopLiveTimer() { clearInterval(liveTimer); liveTimer = null; }
+
+    async function liveTick() {
+      let status = null;
+      try { status = await invoke('cmd_live_transcript_status'); } catch (e) { /* ignore */ }
+      if (recording && status) {
+        updateRecordButton(status);
+        // The session ended on its own (e.g. model missing, or stopped elsewhere).
+        if (!status.active && Date.now() - startupAt > 6000) {
+          recording = false;
+          stopLiveTimer();
+          updateRecordButton();
+          if ((status.line_count || 0) === 0) showModelPrompt(status.diagnostic);
+          await scoreLive();
+          if (current) renderStatus(current);
+          return;
+        }
+      }
+      await scoreLive();
+    }
+
+    // ── Model-missing prompt ────────────────────────────────────
+
+    function showModelPrompt(diagnostic) {
+      document.getElementById('model-diag').textContent = diagnostic || '';
+      document.getElementById('model-prompt').classList.add('show');
+    }
+    function hideModelPrompt() {
+      document.getElementById('model-prompt').classList.remove('show');
+    }
+
+    async function downloadModel() {
+      const btn = document.getElementById('dl-model-btn');
+      btn.classList.add('busy');
+      btn.textContent = 'Downloading base model… (~142 MB)';
+      try {
+        await invoke('cmd_download_model', { model: 'base' });
+        hideModelPrompt();
+        startRecording(); // model is ready — start the session the user wanted
+      } catch (e) {
+        btn.textContent = 'Download failed — retry';
+        document.getElementById('model-diag').textContent = String(e);
+      } finally {
+        btn.classList.remove('busy');
+        if (!recording) btn.textContent = 'Download base model';
+      }
+    }
+
     document.getElementById('bracket-select').addEventListener('change', (e) => loadBracket(e.target.value));
     document.getElementById('refresh-btn').addEventListener('click', () => current && loadBracket(current.slug));
     document.getElementById('score-btn').addEventListener('click', scoreLive);
-    document.getElementById('auto-toggle').addEventListener('change', (e) => {
-      if (e.target.checked) {
-        scoreLive();
-        autoTimer = setInterval(scoreLive, 3000);
-      } else {
-        clearInterval(autoTimer);
-        autoTimer = null;
-      }
-      if (current) renderStatus(current);
+    document.getElementById('record-btn').addEventListener('click', () => recording ? stopRecording() : startRecording());
+    document.getElementById('dl-model-btn').addEventListener('click', downloadModel);
+    document.getElementById('model-link').addEventListener('click', () => {
+      invoke('cmd_open_file', { path: 'https://huggingface.co/ggerganov/whisper.cpp' }).catch(() => {});
     });
     window.addEventListener('resize', () => { if (current) { fitBracket(); drawConnectors(); } });
 
-    loadList().catch((e) => { document.getElementById('status').textContent = 'Error: ' + e; });
+    // On open, attach to any session already running (CLI or main app).
+    async function syncRecordingState() {
+      try {
+        const st = await invoke('cmd_live_transcript_status');
+        if (st && st.active && !recording) {
+          recording = true; startupAt = Date.now();
+          updateRecordButton(st); startLiveTimer();
+          if (current) renderStatus(current);
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    loadList()
+      .then(syncRecordingState)
+      .catch((e) => { document.getElementById('status').textContent = 'Error: ' + e; });
   </script>
 </body>
 </html>
