@@ -205,6 +205,23 @@ impl BracketGame {
         });
         self.results.as_ref().unwrap()
     }
+
+    /// Recompute player standings from already-stored results (e.g. after a
+    /// player is added post-scoring), without needing the transcript again.
+    /// No-op if the bracket has not been scored yet.
+    pub fn recompute_standings(&mut self) {
+        let Some((matchups, total)) = self
+            .results
+            .as_ref()
+            .map(|r| (r.matchups.clone(), r.total_mentions))
+        else {
+            return;
+        };
+        let standings = score_players(&self.players, &matchups, total);
+        if let Some(res) = self.results.as_mut() {
+            res.standings = standings;
+        }
+    }
 }
 
 /// Lowercase and split text into alphanumeric tokens. Any non-alphanumeric

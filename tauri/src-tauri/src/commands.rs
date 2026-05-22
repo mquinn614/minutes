@@ -13453,3 +13453,33 @@ pub fn cmd_madness_score(
     madness::save_game(&game).map_err(|e| e.to_string())?;
     Ok(game)
 }
+
+/// Add or replace a player's full-bracket picks (15 winning seeds in matchup
+/// order). Used by the panel's "Import picks" box. Re-ranks standings against
+/// any existing score so the new player appears immediately.
+#[tauri::command]
+pub fn cmd_madness_add_player(
+    slug: String,
+    name: String,
+    seeds: Vec<u8>,
+) -> Result<minutes_core::madness::BracketGame, String> {
+    use minutes_core::madness;
+    let expected = madness::MATCHUP_COUNT as usize;
+    if seeds.len() != expected {
+        return Err(format!("expected {expected} picks, got {}", seeds.len()));
+    }
+    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
+    let mut picks = std::collections::BTreeMap::new();
+    for (i, seed) in seeds.iter().enumerate() {
+        picks.insert((i + 1) as u8, *seed);
+    }
+    game.set_player(madness::Player {
+        name,
+        picks,
+        tiebreaker_total: None,
+    })
+    .map_err(|e| e.to_string())?;
+    game.recompute_standings();
+    madness::save_game(&game).map_err(|e| e.to_string())?;
+    Ok(game)
+}

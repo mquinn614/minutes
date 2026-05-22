@@ -110,6 +110,16 @@
     .modal .actions { display: flex; flex-direction: column; gap: 10px; align-items: center; }
     .modal a { color: var(--accent); font-size: 12px; text-decoration: none; cursor: pointer; }
     .modal a:hover { text-decoration: underline; }
+    .modal.wide { max-width: 540px; text-align: left; }
+    .modal.wide h3 { text-align: left; }
+    .modal .step p { margin-bottom: 8px; color: var(--text); }
+    .modal .step p code { font-family: 'Geist Mono', monospace; font-size: 11px; background: var(--bg-hover); padding: 1px 5px; border-radius: 3px; }
+    .modal textarea {
+      width: 100%; background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-mid);
+      border-radius: 8px; padding: 8px; font-family: 'Geist Mono', monospace; font-size: 11px;
+      resize: vertical; margin-bottom: 8px;
+    }
+    .modal hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
     .status {
       font-family: 'Geist Mono', monospace;
@@ -239,6 +249,7 @@
     <select id="bracket-select" title="Choose a bracket"></select>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
     <button id="score-btn" title="Score once against the latest transcript">Score now</button>
+    <button id="players-btn" title="Invite players and import their picks">Players</button>
     <button id="refresh-btn" title="Reload from disk">Refresh</button>
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
@@ -265,6 +276,25 @@
         <button class="primary" id="dl-model-btn">Download base model</button>
         <a id="model-link">Where this comes from ↗</a>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="players-modal">
+    <div class="modal wide">
+      <h3>Players</h3>
+      <div class="step">
+        <p><b>1.</b> Send players the pick page (<code>picks.html</code>) and this bracket code:</p>
+        <textarea id="bracket-code" readonly rows="3"></textarea>
+        <button id="copy-bracket-code">Copy bracket code</button>
+      </div>
+      <hr />
+      <div class="step">
+        <p><b>2.</b> Paste a player's picks code to add them to the bracket:</p>
+        <textarea id="import-code" rows="3" placeholder="MMP1:…"></textarea>
+        <button class="primary" id="import-picks-btn">Import picks</button>
+        <div class="diag" id="import-msg"></div>
+      </div>
+      <div class="actions"><a id="players-close">Close</a></div>
     </div>
   </div>
 
@@ -708,6 +738,58 @@
         if (!recording) btn.textContent = 'Download base model';
       }
     }
+
+    // ── Player codes (share bracket / import picks) ─────────────
+
+    // UTF-8-safe base64 so buzzword labels with accents survive.
+    function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
+    function b64decode(str) { return decodeURIComponent(escape(atob(str))); }
+
+    function makeBracketCode(game) {
+      const labels = [...game.terms].sort((a, b) => a.seed - b.seed).map((t) => t.label);
+      return 'MMB1:' + b64encode(JSON.stringify({ t: game.title, s: labels }));
+    }
+
+    function parsePicksCode(code) {
+      code = (code || '').trim();
+      if (!code.startsWith('MMP1:')) throw new Error('That is not a picks code (should start with MMP1:).');
+      const obj = JSON.parse(b64decode(code.slice(5)));
+      if (!obj.n || !Array.isArray(obj.p) || obj.p.length !== 15) throw new Error('Malformed picks code.');
+      return { name: String(obj.n), seeds: obj.p.map(Number) };
+    }
+
+    function openPlayersModal() {
+      if (!current) return;
+      document.getElementById('bracket-code').value = makeBracketCode(current);
+      document.getElementById('import-code').value = '';
+      document.getElementById('import-msg').textContent = '';
+      document.getElementById('players-modal').classList.add('show');
+    }
+
+    async function importPicks() {
+      const msg = document.getElementById('import-msg');
+      try {
+        const { name, seeds } = parsePicksCode(document.getElementById('import-code').value);
+        const game = await invoke('cmd_madness_add_player', { slug: current.slug, name, seeds });
+        render(game);
+        msg.style.color = 'var(--accent)';
+        msg.textContent = `Added ${name}.`;
+        document.getElementById('import-code').value = '';
+      } catch (e) {
+        msg.style.color = 'var(--red)';
+        msg.textContent = String(e).replace(/^Error:\s*/, '');
+      }
+    }
+
+    document.getElementById('players-btn').addEventListener('click', openPlayersModal);
+    document.getElementById('players-close').addEventListener('click', () => document.getElementById('players-modal').classList.remove('show'));
+    document.getElementById('copy-bracket-code').addEventListener('click', () => {
+      const ta = document.getElementById('bracket-code');
+      navigator.clipboard.writeText(ta.value).catch(() => { ta.select(); document.execCommand('copy'); });
+      document.getElementById('copy-bracket-code').textContent = 'Copied ✓';
+      setTimeout(() => { document.getElementById('copy-bracket-code').textContent = 'Copy bracket code'; }, 1500);
+    });
+    document.getElementById('import-picks-btn').addEventListener('click', importPicks);
 
     document.getElementById('bracket-select').addEventListener('change', (e) => loadBracket(e.target.value));
     document.getElementById('refresh-btn').addEventListener('click', () => current && loadBracket(current.slug));

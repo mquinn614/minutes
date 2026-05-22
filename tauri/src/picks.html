@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Minutes Madness — Make Your Picks</title>
+  <style>
+    /* Self-contained: system fonts so it works on any machine with no install. */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      color-scheme: light dark;
+      --bg: #0D0D0B; --bg-elevated: #141412; --bg-hover: #1C1C1A;
+      --border: rgba(255,255,255,0.06); --border-mid: #2A2924;
+      --text: #E8E4DA; --text-secondary: #6B6760; --text-tertiary: #3D3B38;
+      --accent: #30D158; --accent-hover: #4ADE70; --accent-soft: rgba(48,209,88,0.12);
+      --red: #FF453A;
+      --serif: Georgia, 'Times New Roman', serif;
+      --sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #F8F4ED; --bg-elevated: #EFEBE2; --bg-hover: #E8E2D8;
+        --border: rgba(0,0,0,0.07); --border-mid: rgba(0,0,0,0.13);
+        --text: #1A1916; --text-secondary: #8C8880; --text-tertiary: #BDB9B0;
+        --accent: #C96B4E; --accent-hover: #B85A3E; --accent-soft: rgba(201,107,78,0.10);
+        --red: #C0392B;
+      }
+    }
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; display: flex; flex-direction: column; overflow: hidden; }
+
+    header { display: flex; align-items: center; gap: 14px; padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    header h1 { font-family: var(--serif); font-weight: 400; font-size: 22px; }
+    header h1 .it { font-style: italic; }
+    .spacer { flex: 1; }
+    input[type=text], button {
+      font-family: var(--sans); font-size: 13px; color: var(--text);
+      background: var(--bg-hover); border: 1px solid var(--border-mid); border-radius: 8px; padding: 7px 11px;
+    }
+    button { cursor: pointer; }
+    button:hover { background: var(--bg-elevated); }
+    button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    @media (prefers-color-scheme: dark) { button.primary { color: #0D0D0B; } }
+    button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .hint { padding: 8px 20px; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+
+    /* Load panel */
+    #load { flex: 1; display: flex; align-items: center; justify-content: center; }
+    #load .card { background: var(--bg-elevated); border: 1px solid var(--border-mid); border-radius: 14px; padding: 28px; max-width: 460px; text-align: center; }
+    #load h2 { font-family: var(--serif); font-weight: 400; font-size: 22px; margin-bottom: 8px; }
+    #load p { color: var(--text-secondary); margin-bottom: 16px; line-height: 1.5; }
+    #load textarea { width: 100%; background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-mid); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 11px; resize: vertical; margin-bottom: 12px; }
+    #load .err { color: var(--red); font-size: 12px; min-height: 16px; margin-top: 8px; }
+
+    /* Bracket */
+    #game { flex: 1; display: none; flex-direction: column; min-height: 0; }
+    #game.show { display: flex; }
+    #bracket-wrap { flex: 1; overflow: hidden; position: relative; padding: 16px; display: flex; align-items: center; justify-content: center; }
+    #connectors { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+    #bracket { position: relative; z-index: 1; display: flex; align-items: stretch; gap: 16px; width: max-content; height: 100%; }
+    .col { display: flex; flex-direction: column; gap: 6px; width: 150px; }
+    .col.center { justify-content: center; width: 178px; }
+    .col-body { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 8px; }
+    .roundlabel { font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary); text-align: center; margin-bottom: 4px; }
+
+    .match { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .slot { display: flex; align-items: center; gap: 6px; padding: 6px 9px; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); }
+    .slot + .slot { border-top: 1px solid var(--border); }
+    .slot .seed { color: var(--text-tertiary); width: 16px; text-align: right; flex-shrink: 0; font-size: 9px; }
+    .slot .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .slot.pickable { cursor: pointer; }
+    .slot.pickable:hover { background: var(--bg-hover); color: var(--text); }
+    .slot.pick-win { background: var(--accent-soft); color: var(--text); }
+    .slot.pick-win .label { color: var(--accent); font-weight: 600; }
+    .slot.pick-lose { opacity: 0.45; }
+    .slot.empty { color: var(--text-tertiary); cursor: default; }
+
+    .champion { text-align: center; padding: 14px 12px; border-radius: 12px; border: 1px solid var(--accent); background: var(--accent-soft); margin-bottom: 14px; }
+    .champion .crown { font-size: 18px; }
+    .champion .name { font-family: var(--serif); font-size: 22px; color: var(--accent); line-height: 1.1; margin-top: 2px; }
+    .champion .sub { font-family: var(--mono); font-size: 10px; color: var(--text-secondary); margin-top: 4px; }
+
+    footer { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    footer .progress { font-family: var(--mono); font-size: 11px; color: var(--text-secondary); }
+    #code-out { flex: 1; }
+    #copied-msg { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Minutes <span class="it">Madness</span> — Your Picks</h1>
+    <span class="spacer"></span>
+    <span id="game-title" class="hint" style="border:none;padding:0"></span>
+  </header>
+
+  <div id="load">
+    <div class="card">
+      <h2>Make your bracket picks</h2>
+      <p>Paste the bracket code your host sent you, then click the winner of every matchup.</p>
+      <textarea id="code-in" rows="3" placeholder="MMB1:…"></textarea>
+      <button class="primary" id="load-btn">Load bracket</button>
+      <div class="err" id="load-err"></div>
+    </div>
+  </div>
+
+  <div id="game">
+    <div class="hint" id="game-hint">Click the team you think wins each matchup. Change earlier picks anytime — later rounds update.</div>
+    <div id="bracket-wrap">
+      <svg id="connectors"></svg>
+      <div id="bracket"></div>
+    </div>
+    <footer>
+      <span class="progress" id="progress">0 / 15 picks</span>
+      <input type="text" id="player-name" placeholder="Your name" />
+      <button class="primary" id="copy-btn" disabled>Copy my picks code</button>
+      <span id="copied-msg"></span>
+      <span class="spacer"></span>
+      <span class="hint" style="border:none;padding:0">Send the copied code back to your host.</span>
+    </footer>
+  </div>
+
+  <script>
+    const SEED_ORDER = [1, 16, 8, 9, 5, 12, 4, 13, 6, 11, 3, 14, 7, 10, 2, 15];
+    let terms = [];          // [{seed,label}]
+    let picks = {};          // matchupId -> winning seed
+
+    function b64encode(s) { return btoa(unescape(encodeURIComponent(s))); }
+    function b64decode(s) { return decodeURIComponent(escape(atob(s))); }
+    function labelOf(seed) { const t = terms.find((t) => t.seed === seed); return t ? t.label : '#' + seed; }
+
+    // Two seeds contesting matchup m (null if a feeder isn't decided yet).
+    function participants(m) {
+      if (m <= 8) { const i = 2 * (m - 1); return [SEED_ORDER[i], SEED_ORDER[i + 1]]; }
+      const c1 = 2 * (m - 8) - 1, c2 = 2 * (m - 8);
+      return [picks[c1] != null ? picks[c1] : null, picks[c2] != null ? picks[c2] : null];
+    }
+
+    function setPick(m, seed) {
+      picks[m] = seed;
+      // Clear downstream picks that are no longer valid participants.
+      for (let k = m + 1; k <= 15; k++) {
+        const [a, b] = participants(k);
+        if (picks[k] != null && picks[k] !== a && picks[k] !== b) delete picks[k];
+      }
+      render();
+    }
+
+    function slotHtml(m, seed) {
+      if (seed == null) return `<div class="slot empty"><span class="seed">·</span><span class="label">—</span></div>`;
+      let cls = 'slot pickable';
+      if (picks[m] === seed) cls += ' pick-win';
+      else if (picks[m] != null) cls += ' pick-lose';
+      return `<div class="${cls}" data-m="${m}" data-seed="${seed}"><span class="seed">${seed}</span><span class="label" title="${labelOf(seed)}">${labelOf(seed)}</span></div>`;
+    }
+    function matchHtml(m) { const [a, b] = participants(m); return `<div class="match" data-m="${m}">${slotHtml(m, a)}${slotHtml(m, b)}</div>`; }
+    function colHtml(ids, roundName) {
+      return `<div class="roundlabel">${roundName}</div><div class="col-body">${ids.map(matchHtml).join('')}</div>`;
+    }
+
+    function render() {
+      const champ = picks[15];
+      document.getElementById('bracket').innerHTML = `
+        <div class="col">${colHtml([1, 2, 3, 4], 'Round of 16')}</div>
+        <div class="col">${colHtml([9, 10], 'Quarterfinals')}</div>
+        <div class="col">${colHtml([13], 'Semifinals')}</div>
+        <div class="col center">
+          <div class="champion">
+            <div class="crown">\u{1F3C6}</div>
+            <div class="name">${champ != null ? labelOf(champ) : '?'}</div>
+            <div class="sub">${champ != null ? 'Your champion' : 'pick your winner'}</div>
+          </div>
+          <div class="roundlabel">Final</div>
+          ${matchHtml(15)}
+        </div>
+        <div class="col">${colHtml([14], 'Semifinals')}</div>
+        <div class="col">${colHtml([11, 12], 'Quarterfinals')}</div>
+        <div class="col">${colHtml([5, 6, 7, 8], 'Round of 16')}</div>
+      `;
+      requestAnimationFrame(() => { fitBracket(); drawConnectors(); });
+      const count = Object.keys(picks).length;
+      document.getElementById('progress').textContent = `${count} / 15 picks`;
+      document.getElementById('copy-btn').disabled = count !== 15;
+    }
+
+    function fitBracket() {
+      const wrap = document.getElementById('bracket-wrap'), bracket = document.getElementById('bracket');
+      bracket.style.transform = 'none';
+      const availW = wrap.clientWidth - 32, natW = bracket.scrollWidth;
+      const scale = natW > 0 ? Math.min(1, availW / natW) : 1;
+      bracket.style.transformOrigin = 'center center';
+      bracket.style.transform = scale < 1 ? `scale(${scale})` : 'none';
+    }
+
+    function parentOf(id) { return id <= 14 ? 8 + Math.ceil(id / 2) : null; }
+    function drawConnectors() {
+      const svg = document.getElementById('connectors'), wrap = document.getElementById('bracket-wrap');
+      const base = wrap.getBoundingClientRect();
+      svg.setAttribute('width', wrap.scrollWidth); svg.setAttribute('height', wrap.scrollHeight);
+      const stroke = getComputedStyle(document.body).getPropertyValue('--border-mid').trim() || '#888';
+      const rectFor = (id) => { const el = document.querySelector(`.match[data-m="${id}"]`); if (!el) return null; const r = el.getBoundingClientRect(); return { left: r.left - base.left, right: r.right - base.left, midY: r.top - base.top + r.height / 2 }; };
+      let paths = '';
+      for (let k = 1; k <= 14; k++) {
+        const c = rectFor(k), p = rectFor(parentOf(k)); if (!c || !p) continue;
+        const right = p.left > c.left; const cx = right ? c.right : c.left; const px = right ? p.left : p.right; const mx = (cx + px) / 2;
+        paths += `<path d="M ${cx} ${c.midY} H ${mx} V ${p.midY} H ${px}" fill="none" stroke="${stroke}" stroke-width="1.2" />`;
+      }
+      svg.innerHTML = paths;
+    }
+
+    function loadBracket() {
+      const err = document.getElementById('load-err');
+      try {
+        const code = document.getElementById('code-in').value.trim();
+        if (!code.startsWith('MMB1:')) throw new Error('That is not a bracket code (it should start with MMB1:).');
+        const obj = JSON.parse(b64decode(code.slice(5)));
+        if (!Array.isArray(obj.s) || obj.s.length !== 16) throw new Error('Bracket code is malformed.');
+        terms = obj.s.map((label, i) => ({ seed: i + 1, label: String(label) }));
+        picks = {};
+        document.getElementById('game-title').textContent = obj.t || '';
+        document.getElementById('load').style.display = 'none';
+        document.getElementById('game').classList.add('show');
+        render();
+      } catch (e) { err.textContent = String(e).replace(/^Error:\s*/, ''); }
+    }
+
+    function copyPicks() {
+      if (Object.keys(picks).length !== 15) return;
+      const name = (document.getElementById('player-name').value || '').trim() || 'Player';
+      const seeds = []; for (let m = 1; m <= 15; m++) seeds.push(picks[m]);
+      const code = 'MMP1:' + b64encode(JSON.stringify({ n: name, p: seeds }));
+      navigator.clipboard.writeText(code).catch(() => {});
+      const msg = document.getElementById('copied-msg');
+      msg.textContent = 'Copied — send it to your host!';
+      setTimeout(() => { msg.textContent = ''; }, 4000);
+    }
+
+    document.getElementById('load-btn').addEventListener('click', loadBracket);
+    document.getElementById('bracket').addEventListener('click', (e) => {
+      const slot = e.target.closest('.slot.pickable');
+      if (slot) setPick(Number(slot.dataset.m), Number(slot.dataset.seed));
+    });
+    document.getElementById('copy-btn').addEventListener('click', copyPicks);
+    window.addEventListener('resize', () => { if (terms.length) { fitBracket(); drawConnectors(); } });
+  </script>
+</body>
+</html>
