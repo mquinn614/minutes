@@ -263,10 +263,35 @@ pub enum TemplateError {
     Io(#[from] std::io::Error),
 }
 
+/// Errors from the Minutes Madness buzzword-bracket game.
+#[derive(Debug, Error)]
+pub enum MadnessError {
+    #[error("bracket not found: {0}")]
+    NotFound(String),
+
+    #[error("invalid terms: {0}")]
+    InvalidTerms(String),
+
+    #[error("invalid picks: {0}")]
+    InvalidPicks(String),
+
+    #[error("parse error: {0}")]
+    Parse(String),
+
+    #[error("data error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// Unified error type for the minutes-core crate.
 /// CLI matches on this for user-facing error messages.
 #[derive(Debug, Error)]
 pub enum MinutesError {
+    #[error(transparent)]
+    Madness(#[from] MadnessError),
+
     #[error(transparent)]
     Capture(#[from] CaptureError),
 

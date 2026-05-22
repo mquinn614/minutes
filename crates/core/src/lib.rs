@@ -19,6 +19,7 @@ pub mod knowledge;
 pub mod knowledge_extract;
 pub mod logging;
 pub mod macos_permissions;
+pub mod madness;
 pub mod markdown;
 pub mod notes;
 pub mod overlays;

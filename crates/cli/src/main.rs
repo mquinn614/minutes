@@ -991,6 +991,87 @@ enum Commands {
         #[arg(long)]
         save_voice: bool,
     },
+
+    /// Minutes Madness — March Madness for corporate buzzwords.
+    Madness {
+        #[command(subcommand)]
+        action: MadnessAction,
+    },
+}
+
+/// Subcommands for `minutes madness`.
+#[derive(Subcommand)]
+enum MadnessAction {
+    /// Create a new bracket from a 16-line terms file (seed = line order).
+    New {
+        /// Human-readable title (used to derive the slug).
+        #[arg(long)]
+        title: String,
+        /// Path to a terms file: one term per line, `Label | alias | alias`.
+        #[arg(long)]
+        terms: PathBuf,
+        /// Override the auto-derived slug.
+        #[arg(long)]
+        slug: Option<String>,
+    },
+    /// Add or replace a player's full-bracket picks.
+    Pick {
+        /// Game slug.
+        #[arg(long)]
+        game: String,
+        /// Player name.
+        #[arg(long)]
+        player: String,
+        /// 15 winning seeds in matchup order (matchups 1..15), comma-separated.
+        /// If omitted, prompts interactively round by round.
+        #[arg(long)]
+        seeds: Option<String>,
+        /// Tiebreaker: guess at total buzzword mentions across the call.
+        #[arg(long)]
+        tiebreaker: Option<u32>,
+    },
+    /// Score the bracket against a transcript file (.jsonl, .md, or plain text).
+    Score {
+        /// Game slug.
+        #[arg(long)]
+        game: String,
+        /// Path to the transcript to score against.
+        #[arg(long = "from")]
+        from: PathBuf,
+    },
+    /// Watch an active `minutes live` session, tallying mentions in real time,
+    /// and finalize the bracket when the session stops.
+    Watch {
+        /// Game slug.
+        #[arg(long)]
+        game: String,
+        /// Seconds between refreshes.
+        #[arg(long, default_value_t = 3)]
+        interval: u64,
+    },
+    /// Show a bracket: terms, players, and results (if scored).
+    Show {
+        /// Game slug.
+        #[arg(long)]
+        game: String,
+        /// Output raw JSON instead of formatted text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List saved brackets.
+    List,
+    /// Suggest buzzword terms from a word-frequency file.
+    SuggestTerms {
+        /// Path to a word-frequency file (word,count / count word / word: count).
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// How many suggestions to print.
+        #[arg(long, default_value_t = 24)]
+        limit: usize,
+        /// Optional file of extra stopwords to ignore (one per line).
+        #[arg(long)]
+        ignore: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1714,6 +1795,7 @@ fn main() -> Result<()> {
             format,
         } => cmd_transcript(since.as_deref(), status, &format),
         Commands::Dashboard { port, no_open } => dashboard::serve(&config, port, !no_open),
+        Commands::Madness { action } => cmd_madness(action),
     };
 
     minutes_core::parakeet_sidecar::shutdown_global_parakeet_sidecar();
@@ -8925,4 +9007,422 @@ fn cmd_transcript(_since: Option<&str>, _status: bool, _format: &str) -> Result<
     Err(anyhow::anyhow!(
         "`minutes transcript` requires the `whisper` feature. Reinstall without `--no-default-features` to read live transcripts."
     ))
+}
+
+// ── Minutes Madness ────────────────────────────────────────────
+
+fn cmd_madness(action: MadnessAction) -> Result<()> {
+    use minutes_core::madness;
+    match action {
+        MadnessAction::New { title, terms, slug } => {
+            let content = std::fs::read_to_string(&terms).map_err(|e| {
+                anyhow::anyhow!("failed to read terms file {}: {e}", terms.display())
+            })?;
+            let parsed = madness::parse_terms_file(&content)?;
+            let game = madness::BracketGame::new(&title, slug.as_deref(), parsed)?;
+            madness::save_game(&game)?;
+            println!("Created bracket \"{}\"  (slug: {})", game.title, game.slug);
+            println!();
+            print_madness_seeds(&game);
+            println!();
+            println!(
+                "Add players:  minutes madness pick --game {} --player NAME",
+                game.slug
+            );
+            println!(
+                "Score it:     minutes madness score --game {} --from TRANSCRIPT",
+                game.slug
+            );
+            Ok(())
+        }
+        MadnessAction::Pick {
+            game,
+            player,
+            seeds,
+            tiebreaker,
+        } => {
+            let mut g = madness::load_game(&game)?;
+            let picks = match seeds {
+                Some(s) => parse_madness_seeds(&s)?,
+                None => prompt_madness_picks(&g)?,
+            };
+            g.set_player(madness::Player {
+                name: player.clone(),
+                picks,
+                tiebreaker_total: tiebreaker,
+            })?;
+            madness::save_game(&g)?;
+            println!("Saved picks for \"{}\" in bracket \"{}\".", player, g.title);
+            Ok(())
+        }
+        MadnessAction::Score { game, from } => {
+            let mut g = madness::load_game(&game)?;
+            let text = madness::transcript_text_from_file(&from)?;
+            g.score(&text);
+            madness::save_game(&g)?;
+            print_madness_results(&g);
+            Ok(())
+        }
+        MadnessAction::Watch { game, interval } => cmd_madness_watch(&game, interval),
+        MadnessAction::Show { game, json } => {
+            let g = madness::load_game(&game)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&g)?);
+            } else {
+                print_madness_game(&g);
+            }
+            Ok(())
+        }
+        MadnessAction::List => {
+            let slugs = madness::list_games()?;
+            if slugs.is_empty() {
+                println!(
+                    "No brackets yet. Create one with: minutes madness new --title ... --terms FILE"
+                );
+            } else {
+                println!("Saved brackets:");
+                for slug in slugs {
+                    match madness::load_game(&slug) {
+                        Ok(g) => {
+                            let status = if g.results.is_some() {
+                                "scored"
+                            } else {
+                                "open"
+                            };
+                            println!(
+                                "  {slug}  —  \"{}\"  ({} players, {status})",
+                                g.title,
+                                g.players.len()
+                            );
+                        }
+                        Err(_) => println!("  {slug}"),
+                    }
+                }
+            }
+            Ok(())
+        }
+        MadnessAction::SuggestTerms {
+            from,
+            limit,
+            ignore,
+        } => {
+            let content = std::fs::read_to_string(&from).map_err(|e| {
+                anyhow::anyhow!("failed to read frequency file {}: {e}", from.display())
+            })?;
+            let freqs = madness::parse_frequency_file(&content);
+            let extra: Vec<String> = match ignore {
+                Some(path) => std::fs::read_to_string(&path)
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to read ignore file {}: {e}", path.display())
+                    })?
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect(),
+                None => Vec::new(),
+            };
+            let ranked = madness::suggest_terms(&freqs, &extra, limit);
+            if ranked.is_empty() {
+                println!("No candidate buzzwords found (every word was a stopword or too short).");
+            } else {
+                println!(
+                    "Top {} candidate buzzwords (curate to 16 for a terms file):",
+                    ranked.len()
+                );
+                for (i, (word, count)) in ranked.iter().enumerate() {
+                    println!("  {:>2}. {:<24} {}", i + 1, word, count);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Watch an active live session, tally mentions in real time, and finalize the
+/// bracket when the session stops.
+#[cfg(feature = "whisper")]
+fn cmd_madness_watch(game_slug: &str, interval: u64) -> Result<()> {
+    use minutes_core::{live_transcript, madness};
+
+    let mut game = madness::load_game(game_slug)?;
+    let interval = interval.max(1);
+    let mut cursor = 0usize;
+    let mut transcript = String::new();
+
+    let status0 = live_transcript::session_status();
+    let peek = live_transcript::read_since_line(0)?;
+    if !status0.active && peek.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no live transcript found. Start one in another terminal with `minutes live` (or `minutes record`), then re-run:\n  minutes madness watch --game {game_slug}"
+        ));
+    }
+
+    loop {
+        let status = live_transcript::session_status();
+        for line in live_transcript::read_since_line(cursor)? {
+            transcript.push_str(&line.text);
+            transcript.push('\n');
+            cursor = cursor.max(line.line);
+        }
+        render_madness_live(&game, &transcript, &status);
+        if !status.active {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
+
+    if transcript.trim().is_empty() {
+        println!("\nNo transcript was captured — nothing to score.");
+        return Ok(());
+    }
+
+    game.score(&transcript);
+    madness::save_game(&game)?;
+    println!("\nSession ended — final bracket:\n");
+    print_madness_results(&game);
+    Ok(())
+}
+
+/// Clear the screen and draw the live mention leaderboard + projected champion.
+#[cfg(feature = "whisper")]
+fn render_madness_live(
+    game: &minutes_core::madness::BracketGame,
+    transcript: &str,
+    status: &minutes_core::live_transcript::SessionStatus,
+) {
+    use minutes_core::madness;
+    use std::io::Write;
+
+    let counts = madness::count_mentions(transcript, &game.terms);
+    let matchups = madness::resolve_bracket(&counts);
+    let champion = matchups.last().map(|m| m.winner).unwrap_or(0);
+    let total: u32 = counts.values().sum();
+
+    print!("\x1b[2J\x1b[H");
+    let state = if status.active { "LIVE" } else { "ENDED" };
+    println!(
+        "Minutes Madness — \"{}\"  [{}]   {:.0}s, {} utterances, {} mentions",
+        game.title, state, status.duration_secs, status.line_count, total
+    );
+    println!();
+
+    let mut ranked: Vec<(u8, u32)> = counts.iter().map(|(s, c)| (*s, *c)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    for (seed, c) in ranked {
+        let bar = "█".repeat((c as usize).min(40));
+        println!("  {:>3}  {:<24} {}", c, game.label(seed), bar);
+    }
+    println!();
+    if total > 0 {
+        println!(
+            "Projected champion: {} (#{})",
+            game.label(champion),
+            champion
+        );
+    } else {
+        println!("Projected champion: — (waiting for buzzwords)");
+    }
+    println!("\nStop the call with `minutes stop` to finalize the bracket.");
+    std::io::stdout().flush().ok();
+}
+
+/// Fallback when the binary is built without the `whisper` feature.
+#[cfg(not(feature = "whisper"))]
+fn cmd_madness_watch(_game_slug: &str, _interval: u64) -> Result<()> {
+    Err(anyhow::anyhow!(
+        "`minutes madness watch` requires the `whisper` feature (live transcript support)."
+    ))
+}
+
+/// Round number (1..=4) for a matchup id in round-major order.
+fn madness_round_of(matchup_id: u8) -> u8 {
+    match matchup_id {
+        1..=8 => 1,
+        9..=12 => 2,
+        13..=14 => 3,
+        _ => 4,
+    }
+}
+
+/// Parse a `--seeds "16,9,..."` argument into matchup id → seed picks.
+fn parse_madness_seeds(arg: &str) -> Result<std::collections::BTreeMap<u8, u8>> {
+    let count = minutes_core::madness::MATCHUP_COUNT;
+    let values: Vec<&str> = arg
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if values.len() != count as usize {
+        return Err(anyhow::anyhow!(
+            "expected {count} comma-separated seeds (matchups 1..{count}), got {}",
+            values.len()
+        ));
+    }
+    let mut picks = std::collections::BTreeMap::new();
+    for (i, v) in values.iter().enumerate() {
+        let seed: u8 = v
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid seed \"{v}\""))?;
+        picks.insert((i + 1) as u8, seed);
+    }
+    Ok(picks)
+}
+
+/// Walk a player through the bracket interactively, one matchup at a time.
+fn prompt_madness_picks(
+    game: &minutes_core::madness::BracketGame,
+) -> Result<std::collections::BTreeMap<u8, u8>> {
+    use minutes_core::madness;
+    use std::io::Write;
+    let mut picks = std::collections::BTreeMap::new();
+    let stdin = std::io::stdin();
+    println!(
+        "Fill out the bracket for \"{}\" — enter the winning seed for each matchup.",
+        game.title
+    );
+    for m in 1..=madness::MATCHUP_COUNT {
+        let (a, b) = madness::matchup_participants(&picks, m)?;
+        let round = madness_round_of(m);
+        loop {
+            print!(
+                "R{round} M{m}:  [{a}] {}   vs   [{b}] {}  -> winner seed: ",
+                game.label(a),
+                game.label(b)
+            );
+            std::io::stdout().flush().ok();
+            let mut line = String::new();
+            if stdin.read_line(&mut line)? == 0 {
+                return Err(anyhow::anyhow!(
+                    "input ended before the bracket was complete"
+                ));
+            }
+            match line.trim().parse::<u8>() {
+                Ok(s) if s == a || s == b => {
+                    picks.insert(m, s);
+                    break;
+                }
+                _ => println!("  please enter {a} or {b}."),
+            }
+        }
+    }
+    Ok(picks)
+}
+
+/// Print the 16 seeds with any aliases.
+fn print_madness_seeds(game: &minutes_core::madness::BracketGame) {
+    println!("Seeds:");
+    let mut terms: Vec<_> = game.terms.iter().collect();
+    terms.sort_by_key(|t| t.seed);
+    for t in terms {
+        if t.aliases.is_empty() {
+            println!("  {:>2}. {}", t.seed, t.label);
+        } else {
+            println!(
+                "  {:>2}. {}  (aka {})",
+                t.seed,
+                t.label,
+                t.aliases.join(", ")
+            );
+        }
+    }
+}
+
+/// Print a full game overview: seeds, players, and results if scored.
+fn print_madness_game(game: &minutes_core::madness::BracketGame) {
+    println!("Bracket: \"{}\"  (slug: {})", game.title, game.slug);
+    println!();
+    print_madness_seeds(game);
+    println!();
+    if game.players.is_empty() {
+        println!("Players: none yet.");
+    } else {
+        println!("Players ({}):", game.players.len());
+        for p in &game.players {
+            let tb = p
+                .tiebreaker_total
+                .map(|t| format!(", tiebreaker {t}"))
+                .unwrap_or_default();
+            println!("  {}{}", p.name, tb);
+        }
+    }
+    println!();
+    if game.results.is_some() {
+        print_madness_results(game);
+    } else {
+        println!(
+            "Not scored yet. Run: minutes madness score --game {} --from TRANSCRIPT",
+            game.slug
+        );
+    }
+}
+
+/// Render the scored bracket: mention leaderboard, round-by-round results,
+/// champion, and player standings.
+fn print_madness_results(game: &minutes_core::madness::BracketGame) {
+    let Some(results) = &game.results else {
+        return;
+    };
+    let round_names = ["Round of 16", "Quarterfinals", "Semifinals", "Final"];
+    println!("== Minutes Madness results: \"{}\" ==", game.title);
+    println!();
+
+    let mut counts: Vec<(u8, u32)> = results.counts.iter().map(|(s, c)| (*s, *c)).collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    println!("Mentions:");
+    for (seed, c) in &counts {
+        println!("  {:>3}  {:<24} (#{})", c, game.label(*seed), seed);
+    }
+    println!();
+
+    for round in 1..=4u8 {
+        println!("{}:", round_names[(round - 1) as usize]);
+        for m in results.matchups.iter().filter(|m| m.round == round) {
+            let ca = results.counts.get(&m.a).copied().unwrap_or(0);
+            let cb = results.counts.get(&m.b).copied().unwrap_or(0);
+            let wa = if m.winner == m.a { '*' } else { ' ' };
+            let wb = if m.winner == m.b { '*' } else { ' ' };
+            println!(
+                "  {}{:>2} {:<22} ({:>3})   vs   {}{:>2} {:<22} ({:>3})",
+                wa,
+                m.a,
+                game.label(m.a),
+                ca,
+                wb,
+                m.b,
+                game.label(m.b),
+                cb
+            );
+        }
+        println!();
+    }
+
+    println!(
+        "Champion: {} (#{}) with {} mentions",
+        game.label(results.champion),
+        results.champion,
+        results.counts.get(&results.champion).copied().unwrap_or(0)
+    );
+    println!("Total buzzword mentions: {}", results.total_mentions);
+    println!();
+
+    if results.standings.is_empty() {
+        println!("No players entered — pure buzzword science this round.");
+    } else {
+        println!("Standings:");
+        for (rank, ps) in results.standings.iter().enumerate() {
+            let tb = ps
+                .tiebreaker_delta
+                .map(|d| format!("  (tiebreaker off by {d})"))
+                .unwrap_or_default();
+            println!(
+                "  {}. {:<20} {} pts, {}/{} correct{}",
+                rank + 1,
+                ps.name,
+                ps.points,
+                ps.correct,
+                minutes_core::madness::MATCHUP_COUNT,
+                tb
+            );
+        }
+    }
 }
