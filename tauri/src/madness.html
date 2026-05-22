@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Minutes Madness</title>
+  <style>
+    @font-face { font-family: 'Instrument Serif'; font-style: normal; font-weight: 400; src: url('fonts/InstrumentSerif-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Instrument Serif'; font-style: italic; font-weight: 400; src: url('fonts/InstrumentSerif-Italic.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-style: normal; font-weight: 400; src: url('fonts/Geist-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-style: normal; font-weight: 500; src: url('fonts/Geist-Medium.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist'; font-style: normal; font-weight: 600; src: url('fonts/Geist-SemiBold.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 400; src: url('fonts/GeistMono-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'Geist Mono'; font-style: normal; font-weight: 500; src: url('fonts/GeistMono-Medium.woff2') format('woff2'); }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      color-scheme: light dark;
+      --bg: #0D0D0B;
+      --bg-elevated: #141412;
+      --bg-hover: #1C1C1A;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-mid: #2A2924;
+      --text: #E8E4DA;
+      --text-secondary: #6B6760;
+      --text-tertiary: #3D3B38;
+      --accent: #30D158;
+      --accent-hover: #4ADE70;
+      --accent-soft: rgba(48, 209, 88, 0.12);
+      --red: #FF453A;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #F8F4ED;
+        --bg-elevated: #EFEBE2;
+        --bg-hover: #E8E2D8;
+        --border: rgba(0, 0, 0, 0.07);
+        --border-mid: rgba(0, 0, 0, 0.13);
+        --text: #1A1916;
+        --text-secondary: #8C8880;
+        --text-tertiary: #BDB9B0;
+        --accent: #C96B4E;
+        --accent-hover: #B85A3E;
+        --accent-soft: rgba(201, 107, 78, 0.10);
+        --red: #C0392B;
+      }
+    }
+
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Geist', system-ui, sans-serif;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    header h1 {
+      font-family: 'Instrument Serif', serif;
+      font-weight: 400;
+      font-size: 22px;
+      letter-spacing: 0.3px;
+    }
+    header h1 .mono { font-family: 'Geist Mono', monospace; font-size: 13px; color: var(--accent); vertical-align: middle; }
+    .spacer { flex: 1; }
+
+    select, button {
+      font-family: 'Geist', sans-serif;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg-hover);
+      border: 1px solid var(--border-mid);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--bg-elevated); }
+    button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    @media (prefers-color-scheme: dark) { button.primary { color: #0D0D0B; } }
+    button.primary:hover { background: var(--accent-hover); }
+    label.toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+
+    .status {
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      padding: 6px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex; gap: 16px; align-items: center;
+    }
+    .badge {
+      font-family: 'Geist Mono', monospace; font-size: 10px;
+      background: var(--accent-soft); color: var(--accent);
+      border-radius: 999px; padding: 2px 8px;
+    }
+    .badge.live { background: var(--red); color: #fff; }
+
+    main { flex: 1; display: flex; min-height: 0; }
+
+    /* Bracket area */
+    #bracket-wrap { flex: 1; overflow: hidden; position: relative; padding: 16px; display: flex; align-items: center; justify-content: center; }
+    #connectors { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+    #bracket {
+      position: relative; z-index: 1;
+      display: flex; align-items: stretch; gap: 16px;
+      width: max-content; height: 100%;
+    }
+    .col { display: flex; flex-direction: column; gap: 6px; width: 148px; }
+    .col.center { justify-content: center; width: 178px; }
+    .col-body { flex: 1; display: flex; flex-direction: column; justify-content: space-around; gap: 8px; }
+    .roundlabel {
+      font-family: 'Geist Mono', monospace; font-size: 9px; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-tertiary); text-align: center; margin-bottom: 4px;
+    }
+
+    .match {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .slot {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 8px;
+      font-family: 'Geist Mono', monospace; font-size: 10.5px;
+      color: var(--text-secondary);
+    }
+    .slot + .slot { border-top: 1px solid var(--border); }
+    .slot .seed { color: var(--text-tertiary); width: 14px; text-align: right; flex-shrink: 0; font-size: 9px; }
+    .slot .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .slot .count { color: var(--text-tertiary); flex-shrink: 0; }
+    .slot.win { color: var(--text); background: var(--accent-soft); }
+    .slot.win .label { color: var(--accent); font-weight: 500; }
+    .slot.win .count { color: var(--accent); }
+
+    .champion {
+      text-align: center; padding: 14px 12px; border-radius: 12px;
+      border: 1px solid var(--accent); background: var(--accent-soft);
+      margin-bottom: 14px;
+    }
+    .champion .crown { font-size: 18px; }
+    .champion .name { font-family: 'Instrument Serif', serif; font-size: 22px; color: var(--accent); line-height: 1.1; margin-top: 2px; }
+    .champion .sub { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-secondary); margin-top: 4px; }
+
+    /* Leaderboard sidebar */
+    aside {
+      width: 290px; flex-shrink: 0; border-left: 1px solid var(--border);
+      overflow: auto; padding: 18px 18px 28px;
+    }
+    aside h2 {
+      font-family: 'Geist Mono', monospace; font-size: 10px; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent); margin: 18px 0 8px;
+    }
+    aside h2:first-child { margin-top: 0; }
+    .standing { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .standing .rank { font-family: 'Geist Mono', monospace; color: var(--text-tertiary); width: 18px; }
+    .standing .pname { flex: 1; font-weight: 500; }
+    .standing .pts { font-family: 'Geist Mono', monospace; color: var(--accent); }
+    .standing .corr { font-family: 'Geist Mono', monospace; color: var(--text-secondary); font-size: 11px; }
+    .empty { color: var(--text-secondary); font-size: 12px; padding: 4px 0; }
+
+    .bar-row { margin: 4px 0; }
+    .bar-row .blabel { display: flex; justify-content: space-between; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-secondary); }
+    .bar-row .btrack { height: 6px; background: var(--bg-hover); border-radius: 999px; margin-top: 2px; overflow: hidden; }
+    .bar-row .bfill { height: 100%; background: var(--accent); border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Minutes <span style="font-style:italic">Madness</span></h1>
+    <span class="spacer"></span>
+    <select id="bracket-select" title="Choose a bracket"></select>
+    <button id="refresh-btn" title="Reload from disk">Refresh</button>
+    <button id="score-btn" class="primary" title="Score against the live transcript">Score vs live</button>
+    <label class="toggle"><input type="checkbox" id="auto-toggle" /> Auto-score live</label>
+  </header>
+  <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
+  <main>
+    <div id="bracket-wrap">
+      <svg id="connectors"></svg>
+      <div id="bracket"></div>
+    </div>
+    <aside>
+      <h2>Standings</h2>
+      <div id="standings"></div>
+      <h2>Mentions</h2>
+      <div id="mentions"></div>
+    </aside>
+  </main>
+
+  <script>
+    const SEED_ORDER = [1, 16, 8, 9, 5, 12, 4, 13, 6, 11, 3, 14, 7, 10, 2, 15];
+
+    // In the Tauri app, call real commands. Outside it (browser/preview), fall
+    // back to sample data so the bracket can be previewed without the backend.
+    const invoke = window.__TAURI__
+      ? window.__TAURI__.core.invoke
+      : async (cmd, args) => mockInvoke(cmd, args);
+
+    function mockGame() {
+      const labels = ['AI', 'revenue', 'growth', 'accelerate', 'OKRs', 'scale',
+        'circle back', 'double click', 'follow up', 'low-hanging fruit',
+        'move the needle', 'deep dive', 'value-add', 'north star', 'synergy', 'leverage'];
+      const terms = labels.map((label, i) => ({ seed: i + 1, label, aliases: [] }));
+      const c = { 1: 4, 2: 2, 3: 1, 4: 1, 5: 0, 6: 0, 7: 1, 8: 1, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 1, 15: 0, 16: 0 };
+      const r = resolve(c);
+      return {
+        slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', terms,
+        players: [{ name: 'Dana', picks: {}, tiebreaker_total: 12 }, { name: 'Chalk', picks: {}, tiebreaker_total: 20 }],
+        results: {
+          counts: c, matchups: r.matchups, champion: r.champion,
+          total_mentions: Object.values(c).reduce((a, b) => a + b, 0),
+          standings: [
+            { name: 'Dana', points: 18, correct: 9, tiebreaker_total: 12, tiebreaker_delta: 1 },
+            { name: 'Chalk', points: 12, correct: 7, tiebreaker_total: 20, tiebreaker_delta: 9 },
+          ],
+        },
+      };
+    }
+    function mockInvoke(cmd) {
+      if (cmd === 'cmd_madness_list') return [{ slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', players: 2, scored: true, champion: 'AI' }];
+      return mockGame();
+    }
+    const ROUND_NAMES = { 1: 'Round of 16', 2: 'Quarterfinals', 3: 'Semifinals', 4: 'Final' };
+
+    let current = null;       // current bracket game object
+    let autoTimer = null;
+
+    // Resolve a bracket from a {seed: count} map — mirrors the Rust logic.
+    function resolve(counts) {
+      let slots = SEED_ORDER.slice();
+      const matchups = [];
+      let id = 1, round = 1;
+      while (slots.length > 1) {
+        const next = [];
+        for (let i = 0; i < slots.length; i += 2) {
+          const a = slots[i], b = slots[i + 1];
+          const ca = counts[a] || 0, cb = counts[b] || 0;
+          const w = ca > cb ? a : (cb > ca ? b : Math.min(a, b));
+          matchups.push({ id, round, a, b, winner: w });
+          next.push(w);
+          id++;
+        }
+        slots = next; round++;
+      }
+      return { matchups, champion: slots[0] };
+    }
+
+    function labelOf(game, seed) {
+      const t = game.terms.find((t) => t.seed === seed);
+      return t ? t.label : '#' + seed;
+    }
+
+    function matchById(matchups, id) { return matchups.find((m) => m.id === id); }
+
+    function slotHtml(game, counts, seed, winner) {
+      const cls = seed === winner ? 'slot win' : 'slot';
+      const c = counts[seed] || 0;
+      return `<div class="${cls}"><span class="seed">${seed}</span><span class="label" title="${labelOf(game, seed)}">${labelOf(game, seed)}</span><span class="count">${c}</span></div>`;
+    }
+
+    function matchHtml(game, counts, m) {
+      return `<div class="match" data-m="${m.id}">${slotHtml(game, counts, m.a, m.winner)}${slotHtml(game, counts, m.b, m.winner)}</div>`;
+    }
+
+    function colHtml(game, counts, matchups, ids, roundName) {
+      const cells = ids.map((id) => matchHtml(game, counts, matchById(matchups, id))).join('');
+      const label = roundName ? `<div class="roundlabel">${roundName}</div>` : '';
+      return label + `<div class="col-body">${cells}</div>`;
+    }
+
+    function renderBracket(game) {
+      const counts = {};
+      const res = game.results;
+      for (const s of SEED_ORDER) counts[s] = res ? (res.counts[s] || 0) : 0;
+      const matchups = res ? res.matchups : resolve(counts).matchups;
+      const champion = res ? res.champion : resolve(counts).champion;
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+
+      const bracket = document.getElementById('bracket');
+      // Columns: left flows inward, right mirrors, center holds champion + final.
+      bracket.innerHTML = `
+        <div class="col">${colHtml(game, counts, matchups, [1, 2, 3, 4], 'Round of 16')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [9, 10], 'Quarterfinals')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [13], 'Semifinals')}</div>
+        <div class="col center">
+          <div class="champion">
+            <div class="crown">\u{1F3C6}</div>
+            <div class="name">${total > 0 ? labelOf(game, champion) : '—'}</div>
+            <div class="sub">${total > 0 ? 'Champion · ' + (counts[champion] || 0) + ' mentions' : 'awaiting buzzwords'}</div>
+          </div>
+          <div class="roundlabel">Final</div>
+          ${matchHtml(game, counts, matchById(matchups, 15))}
+        </div>
+        <div class="col">${colHtml(game, counts, matchups, [14], 'Semifinals')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [11, 12], 'Quarterfinals')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [5, 6, 7, 8], 'Round of 16')}</div>
+      `;
+      requestAnimationFrame(() => { fitBracket(); drawConnectors(); });
+    }
+
+    // Scale the fixed-width bracket down to fit the viewport so the whole
+    // tournament is always visible (never upscaled past 1:1).
+    function fitBracket() {
+      const wrap = document.getElementById('bracket-wrap');
+      const bracket = document.getElementById('bracket');
+      bracket.style.transform = 'none';
+      const availW = wrap.clientWidth - 32;
+      const natW = bracket.scrollWidth;
+      const scale = natW > 0 ? Math.min(1, availW / natW) : 1;
+      bracket.style.transformOrigin = 'center center';
+      bracket.style.transform = scale < 1 ? `scale(${scale})` : 'none';
+    }
+
+    // Parent matchup id that a given matchup feeds into (15 = final, no parent).
+    function parentOf(id) { return id <= 14 ? 8 + Math.ceil(id / 2) : null; }
+
+    function drawConnectors() {
+      const svg = document.getElementById('connectors');
+      const wrap = document.getElementById('bracket-wrap');
+      const base = wrap.getBoundingClientRect();
+      const W = wrap.scrollWidth, H = wrap.scrollHeight;
+      svg.setAttribute('width', W);
+      svg.setAttribute('height', H);
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      const stroke = getComputedStyle(document.body).getPropertyValue('--border-mid').trim() || '#888';
+      let paths = '';
+      const rectFor = (id) => {
+        const el = document.querySelector(`.match[data-m="${id}"]`);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          top: r.top - base.top + wrap.scrollTop,
+          left: r.left - base.left + wrap.scrollLeft,
+          right: r.right - base.left + wrap.scrollLeft,
+          midY: r.top - base.top + wrap.scrollTop + r.height / 2,
+        };
+      };
+      for (let k = 1; k <= 14; k++) {
+        const child = rectFor(k);
+        const parent = rectFor(parentOf(k));
+        if (!child || !parent) continue;
+        const parentIsRight = parent.left > child.left;
+        const cx = parentIsRight ? child.right : child.left;
+        const px = parentIsRight ? parent.left : parent.right;
+        const midX = (cx + px) / 2;
+        paths += `<path d="M ${cx} ${child.midY} H ${midX} V ${parent.midY} H ${px}" fill="none" stroke="${stroke}" stroke-width="1.2" />`;
+      }
+      svg.innerHTML = paths;
+    }
+
+    function renderLeaderboard(game) {
+      const res = game.results;
+      const standings = document.getElementById('standings');
+      const mentions = document.getElementById('mentions');
+
+      if (res && res.standings && res.standings.length) {
+        standings.innerHTML = res.standings.map((s, i) =>
+          `<div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15</span></div>`
+        ).join('');
+      } else {
+        standings.innerHTML = '<div class="empty">No players entered. Add picks with <code>minutes madness pick</code>.</div>';
+      }
+
+      if (res) {
+        const entries = SEED_ORDER.map((s) => [s, res.counts[s] || 0]).sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+        const max = Math.max(1, entries[0][1]);
+        mentions.innerHTML = entries.map(([seed, c]) =>
+          `<div class="bar-row"><div class="blabel"><span>${labelOf(game, seed)}</span><span>${c}</span></div><div class="btrack"><div class="bfill" style="width:${(c / max) * 100}%"></div></div></div>`
+        ).join('');
+      } else {
+        mentions.innerHTML = '<div class="empty">Not scored yet. Use “Score vs live” or <code>minutes madness score</code>.</div>';
+      }
+    }
+
+    function renderStatus(game) {
+      const s = document.getElementById('status');
+      const res = game.results;
+      const total = res ? res.total_mentions : 0;
+      const scored = res ? `<span class="badge">scored</span>` : `<span class="badge">projected</span>`;
+      const live = autoTimer ? `<span class="badge live">● auto-scoring live</span>` : '';
+      s.innerHTML = `${scored} ${live} <span>“${game.title}”</span> <span>${game.terms.length} seeds</span> <span>${game.players.length} players</span> <span>${total} total mentions</span>`;
+    }
+
+    function render(game) {
+      current = game;
+      renderStatus(game);
+      renderBracket(game);
+      renderLeaderboard(game);
+    }
+
+    async function loadList() {
+      const games = await invoke('cmd_madness_list');
+      const sel = document.getElementById('bracket-select');
+      if (!games.length) {
+        sel.innerHTML = '<option>(no brackets)</option>';
+        return;
+      }
+      sel.innerHTML = games.map((g) => `<option value="${g.slug}">${g.title}</option>`).join('');
+      await loadBracket(sel.value);
+    }
+
+    async function loadBracket(slug) {
+      if (!slug || slug === '(no brackets)') return;
+      const game = await invoke('cmd_madness_show', { slug });
+      render(game);
+    }
+
+    async function scoreLive() {
+      if (!current) return;
+      try {
+        const game = await invoke('cmd_madness_score', { slug: current.slug, from: null });
+        render(game);
+      } catch (e) {
+        document.getElementById('status').textContent = 'Score failed: ' + e;
+      }
+    }
+
+    document.getElementById('bracket-select').addEventListener('change', (e) => loadBracket(e.target.value));
+    document.getElementById('refresh-btn').addEventListener('click', () => current && loadBracket(current.slug));
+    document.getElementById('score-btn').addEventListener('click', scoreLive);
+    document.getElementById('auto-toggle').addEventListener('change', (e) => {
+      if (e.target.checked) {
+        scoreLive();
+        autoTimer = setInterval(scoreLive, 3000);
+      } else {
+        clearInterval(autoTimer);
+        autoTimer = null;
+      }
+      if (current) renderStatus(current);
+    });
+    window.addEventListener('resize', () => { if (current) { fitBracket(); drawConnectors(); } });
+
+    loadList().catch((e) => { document.getElementById('status').textContent = 'Error: ' + e; });
+  </script>
+</body>
+</html>

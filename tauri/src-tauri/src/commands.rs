@@ -13399,3 +13399,57 @@ mod update_ui_tests {
         assert!(!failed.can_cancel);
     }
 }
+
+// ── Minutes Madness (buzzword bracket game) ─────────────────────
+
+/// List saved Minutes Madness brackets with summary metadata for the desktop
+/// panel's selector.
+#[tauri::command]
+pub fn cmd_madness_list() -> Result<Vec<serde_json::Value>, String> {
+    use minutes_core::madness;
+    let slugs = madness::list_games().map_err(|e| e.to_string())?;
+    Ok(slugs
+        .iter()
+        .filter_map(|s| madness::load_game(s).ok())
+        .map(|g| {
+            let champion = g
+                .results
+                .as_ref()
+                .map(|r| g.label(r.champion))
+                .unwrap_or_default();
+            serde_json::json!({
+                "slug": g.slug,
+                "title": g.title,
+                "players": g.players.len(),
+                "scored": g.results.is_some(),
+                "champion": champion,
+            })
+        })
+        .collect())
+}
+
+/// Load a single bracket (terms, players, and results) for rendering.
+#[tauri::command]
+pub fn cmd_madness_show(slug: String) -> Result<minutes_core::madness::BracketGame, String> {
+    minutes_core::madness::load_game(&slug).map_err(|e| e.to_string())
+}
+
+/// Score a bracket against a transcript and persist the result. When `from` is
+/// empty/absent, scores against the current live-transcript JSONL so the panel
+/// can re-score a call in progress.
+#[tauri::command]
+pub fn cmd_madness_score(
+    slug: String,
+    from: Option<String>,
+) -> Result<minutes_core::madness::BracketGame, String> {
+    use minutes_core::madness;
+    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
+    let path = match from {
+        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => minutes_core::pid::live_transcript_jsonl_path(),
+    };
+    let text = madness::transcript_text_from_file(&path).map_err(|e| e.to_string())?;
+    game.score(&text);
+    madness::save_game(&game).map_err(|e| e.to_string())?;
+    Ok(game)
+}

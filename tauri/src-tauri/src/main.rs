@@ -302,6 +302,22 @@ fn show_note_window(app: &tauri::AppHandle) {
         .build();
 }
 
+fn show_madness_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("madness") {
+        win.show().ok();
+        win.set_focus().ok();
+        return;
+    }
+    let _win = WebviewWindowBuilder::new(app, "madness", WebviewUrl::App("madness.html".into()))
+        .title("Minutes Madness")
+        .inner_size(1320.0, 860.0)
+        .min_inner_size(860.0, 560.0)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
+        .center()
+        .focused(true)
+        .build();
+}
+
 pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &str) {
     // Use session_id as the window label (must be unique)
     let label = session_id.replace(':', "-");
@@ -745,6 +761,8 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             MenuItem::with_id(app, "app-open-main", "Open Minutes", true, Some("Cmd+O"))?;
         let note_item =
             MenuItem::with_id(app, "app-add-note", "Add Note…", true, Some("Cmd+Shift+N"))?;
+        let madness_item =
+            MenuItem::with_id(app, "app-madness", "Minutes Madness…", true, None::<&str>)?;
         let list_item = MenuItem::with_id(
             app,
             "app-open-meetings-folder",
@@ -759,6 +777,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .item(&open_item)
                 .separator()
                 .item(&note_item)
+                .item(&madness_item)
                 .item(&list_item)
                 .separator()
                 .close_window()
@@ -773,6 +792,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 .item(&open_item)
                 .separator()
                 .item(&note_item)
+                .item(&madness_item)
                 .item(&list_item)
                 .separator()
                 .close_window()
@@ -1315,6 +1335,9 @@ fn main() {
             "app-add-note" => {
                 show_main_window(app);
                 show_note_window(app);
+            }
+            "app-madness" => {
+                show_madness_window(app);
             }
             "app-open-meetings-folder" => {
                 let meetings_dir = minutes_core::config::Config::load().output_dir;
@@ -2320,6 +2343,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::cmd_capture_status,
+            commands::cmd_madness_list,
+            commands::cmd_madness_show,
+            commands::cmd_madness_score,
             commands::cmd_status,
             commands::cmd_processing_jobs,
             commands::cmd_list_meetings,
