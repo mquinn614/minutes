@@ -114,9 +114,10 @@
       <span class="progress" id="progress">0 / 15 picks</span>
       <input type="text" id="player-name" placeholder="Your name" />
       <button class="primary" id="copy-btn" disabled>Copy my picks code</button>
+      <input type="text" id="code-result" readonly placeholder="your picks code appears here" style="display:none; flex:1; font-family:var(--mono); font-size:11px;" />
       <span id="copied-msg"></span>
       <span class="spacer"></span>
-      <span class="hint" style="border:none;padding:0">Send the copied code back to your host.</span>
+      <span class="hint" style="border:none;padding:0">Send this code back to your host.</span>
     </footer>
   </div>
 
@@ -229,10 +230,17 @@
       const name = (document.getElementById('player-name').value || '').trim() || 'Player';
       const seeds = []; for (let m = 1; m <= 15; m++) seeds.push(picks[m]);
       const code = 'MMP1:' + b64encode(JSON.stringify({ n: name, p: seeds }));
-      navigator.clipboard.writeText(code).catch(() => {});
+      // Always reveal the code so manual copy works even if the clipboard API is blocked.
+      const out = document.getElementById('code-result');
+      out.style.display = 'block';
+      out.value = code;
+      out.focus();
+      out.select();
       const msg = document.getElementById('copied-msg');
-      msg.textContent = 'Copied — send it to your host!';
-      setTimeout(() => { msg.textContent = ''; }, 4000);
+      navigator.clipboard.writeText(code)
+        .then(() => { msg.textContent = 'Copied — send it to your host!'; })
+        .catch(() => { msg.textContent = 'Select the code and copy it →'; });
+      setTimeout(() => { msg.textContent = ''; }, 5000);
     }
 
     document.getElementById('load-btn').addEventListener('click', loadBracket);
