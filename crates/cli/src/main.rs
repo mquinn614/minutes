@@ -9445,6 +9445,7 @@ fn print_madness_results(game: &minutes_core::madness::BracketGame) {
                 .tiebreaker_delta
                 .map(|d| format!("  (tiebreaker off by {d})"))
                 .unwrap_or_default();
+            let champ_mark = if ps.champion_correct { "✓" } else { "✗" };
             println!(
                 "  {}. {:<20} {} pts, {}/{} correct{}",
                 rank + 1,
@@ -9453,6 +9454,15 @@ fn print_madness_results(game: &minutes_core::madness::BracketGame) {
                 ps.correct,
                 minutes_core::madness::MATCHUP_COUNT,
                 tb
+            );
+            println!(
+                "       R16 {}/8 · QF {}/4 · SF {}/2 · Final {}/1   champion: {} {}",
+                ps.round_correct[0],
+                ps.round_correct[1],
+                ps.round_correct[2],
+                ps.round_correct[3],
+                game.label(ps.predicted_champion),
+                champ_mark
             );
         }
     }

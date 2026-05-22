@@ -129,8 +129,20 @@
       background: var(--bg-elevated);
       border: 1px solid var(--border);
       border-radius: 8px;
-      overflow: hidden;
+      overflow: visible;
+      position: relative;
     }
+    .match.bust { border-color: var(--red); }
+    .match .pickmark {
+      position: absolute; top: -7px; right: -7px; min-width: 15px; height: 15px;
+      padding: 0 3px; border-radius: 999px; font-size: 9px; font-family: 'Geist Mono', monospace;
+      display: flex; align-items: center; justify-content: center; color: #fff; z-index: 3;
+    }
+    .match .pickmark.ok { background: var(--accent); }
+    .match .pickmark.bust { background: var(--red); }
+    .slot.mispick { background: rgba(192, 57, 43, 0.12); }
+    @media (prefers-color-scheme: dark) { .slot.mispick { background: rgba(255, 69, 58, 0.14); } }
+    .slot.mispick .label { color: var(--red); text-decoration: line-through; }
     .slot {
       display: flex; align-items: center; gap: 6px;
       padding: 4px 8px;
@@ -164,11 +176,20 @@
       text-transform: uppercase; color: var(--accent); margin: 18px 0 8px;
     }
     aside h2:first-child { margin-top: 0; }
-    .standing { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
-    .standing .rank { font-family: 'Geist Mono', monospace; color: var(--text-tertiary); width: 18px; }
-    .standing .pname { flex: 1; font-weight: 500; }
+    .standing-row { padding: 7px 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; margin: 0 -8px; }
+    .standing-row:hover { background: var(--bg-hover); }
+    .standing-row.sel { background: var(--accent-soft); border-color: var(--accent); }
+    .standing-row.leader .pname { color: var(--accent); }
+    .standing { display: flex; align-items: baseline; gap: 8px; }
+    .standing .rank { font-family: 'Geist Mono', monospace; color: var(--text-tertiary); width: 16px; }
+    .standing .pname { flex: 1; font-weight: 600; }
     .standing .pts { font-family: 'Geist Mono', monospace; color: var(--accent); }
     .standing .corr { font-family: 'Geist Mono', monospace; color: var(--text-secondary); font-size: 11px; }
+    .breakdown { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-secondary); margin-top: 3px; }
+    .breakdown .champ.ok { color: var(--accent); }
+    .breakdown .champ.bust { color: var(--red); }
+    .overlay-hint { font-size: 11px; color: var(--text-secondary); margin: 4px 0 8px; }
+    .overlay-hint b { color: var(--text); font-weight: 600; }
     .empty { color: var(--text-secondary); font-size: 12px; padding: 4px 0; }
 
     .bar-row { margin: 4px 0; }
@@ -216,15 +237,19 @@
       const terms = labels.map((label, i) => ({ seed: i + 1, label, aliases: [] }));
       const c = { 1: 4, 2: 2, 3: 1, 4: 1, 5: 0, 6: 0, 7: 1, 8: 1, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 1, 15: 0, 16: 0 };
       const r = resolve(c);
+      const chalkPicks = {}; r.matchups.forEach((m) => { chalkPicks[m.id] = m.winner; });
+      const danaPicks = Object.assign({}, chalkPicks);
+      const fin = r.matchups.find((m) => m.id === 15);
+      danaPicks[15] = fin.a === fin.winner ? fin.b : fin.a; // bust the final
       return {
         slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', terms,
-        players: [{ name: 'Dana', picks: {}, tiebreaker_total: 12 }, { name: 'Chalk', picks: {}, tiebreaker_total: 20 }],
+        players: [{ name: 'Chalk', picks: chalkPicks, tiebreaker_total: 20 }, { name: 'Dana', picks: danaPicks, tiebreaker_total: 12 }],
         results: {
           counts: c, matchups: r.matchups, champion: r.champion,
           total_mentions: Object.values(c).reduce((a, b) => a + b, 0),
           standings: [
-            { name: 'Dana', points: 18, correct: 9, tiebreaker_total: 12, tiebreaker_delta: 1 },
-            { name: 'Chalk', points: 12, correct: 7, tiebreaker_total: 20, tiebreaker_delta: 9 },
+            { name: 'Chalk', points: 32, correct: 15, round_correct: [8, 4, 2, 1], round_points: [8, 8, 8, 8], predicted_champion: r.champion, champion_correct: true, tiebreaker_total: 20, tiebreaker_delta: 9 },
+            { name: 'Dana', points: 24, correct: 14, round_correct: [8, 4, 2, 0], round_points: [8, 8, 8, 0], predicted_champion: danaPicks[15], champion_correct: false, tiebreaker_total: 12, tiebreaker_delta: 1 },
           ],
         },
       };
@@ -237,6 +262,20 @@
 
     let current = null;       // current bracket game object
     let autoTimer = null;
+    let selectedName = null;  // player whose picks are overlaid on the bracket
+    let selectedPicks = null;
+
+    // Toggle the player-bracket overlay. Clicking the selected player clears it.
+    function selectPlayer(name) {
+      if (selectedName === name) {
+        selectedName = null; selectedPicks = null;
+      } else {
+        const p = current && current.players.find((p) => p.name === name);
+        selectedName = name; selectedPicks = p ? p.picks : null;
+      }
+      renderBracket(current);
+      renderLeaderboard(current);
+    }
 
     // Resolve a bracket from a {seed: count} map — mirrors the Rust logic.
     function resolve(counts) {
@@ -265,18 +304,29 @@
 
     function matchById(matchups, id) { return matchups.find((m) => m.id === id); }
 
-    function slotHtml(game, counts, seed, winner) {
-      const cls = seed === winner ? 'slot win' : 'slot';
+    function slotHtml(game, counts, seed, winner, pickedSeed) {
+      let cls = seed === winner ? 'slot win' : 'slot';
+      if (pickedSeed != null && seed === pickedSeed && seed !== winner) cls += ' mispick';
       const c = counts[seed] || 0;
       return `<div class="${cls}"><span class="seed">${seed}</span><span class="label" title="${labelOf(game, seed)}">${labelOf(game, seed)}</span><span class="count">${c}</span></div>`;
     }
 
-    function matchHtml(game, counts, m) {
-      return `<div class="match" data-m="${m.id}">${slotHtml(game, counts, m.a, m.winner)}${slotHtml(game, counts, m.b, m.winner)}</div>`;
+    function matchHtml(game, counts, m, picks) {
+      let badge = '', cls = 'match', pickedSeed = null;
+      if (picks) {
+        const pick = picks[m.id];
+        if (pick != null) {
+          pickedSeed = pick;
+          const correct = pick === m.winner;
+          cls += correct ? '' : ' bust';
+          badge = `<span class="pickmark ${correct ? 'ok' : 'bust'}">${correct ? '✓' : '✗'}</span>`;
+        }
+      }
+      return `<div class="${cls}" data-m="${m.id}">${badge}${slotHtml(game, counts, m.a, m.winner, pickedSeed)}${slotHtml(game, counts, m.b, m.winner, pickedSeed)}</div>`;
     }
 
-    function colHtml(game, counts, matchups, ids, roundName) {
-      const cells = ids.map((id) => matchHtml(game, counts, matchById(matchups, id))).join('');
+    function colHtml(game, counts, matchups, ids, roundName, picks) {
+      const cells = ids.map((id) => matchHtml(game, counts, matchById(matchups, id), picks)).join('');
       const label = roundName ? `<div class="roundlabel">${roundName}</div>` : '';
       return label + `<div class="col-body">${cells}</div>`;
     }
@@ -289,12 +339,13 @@
       const champion = res ? res.champion : resolve(counts).champion;
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
+      const picks = selectedPicks;
       const bracket = document.getElementById('bracket');
       // Columns: left flows inward, right mirrors, center holds champion + final.
       bracket.innerHTML = `
-        <div class="col">${colHtml(game, counts, matchups, [1, 2, 3, 4], 'Round of 16')}</div>
-        <div class="col">${colHtml(game, counts, matchups, [9, 10], 'Quarterfinals')}</div>
-        <div class="col">${colHtml(game, counts, matchups, [13], 'Semifinals')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [1, 2, 3, 4], 'Round of 16', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [9, 10], 'Quarterfinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [13], 'Semifinals', picks)}</div>
         <div class="col center">
           <div class="champion">
             <div class="crown">\u{1F3C6}</div>
@@ -302,11 +353,11 @@
             <div class="sub">${total > 0 ? 'Champion · ' + (counts[champion] || 0) + ' mentions' : 'awaiting buzzwords'}</div>
           </div>
           <div class="roundlabel">Final</div>
-          ${matchHtml(game, counts, matchById(matchups, 15))}
+          ${matchHtml(game, counts, matchById(matchups, 15), picks)}
         </div>
-        <div class="col">${colHtml(game, counts, matchups, [14], 'Semifinals')}</div>
-        <div class="col">${colHtml(game, counts, matchups, [11, 12], 'Quarterfinals')}</div>
-        <div class="col">${colHtml(game, counts, matchups, [5, 6, 7, 8], 'Round of 16')}</div>
+        <div class="col">${colHtml(game, counts, matchups, [14], 'Semifinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [11, 12], 'Quarterfinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [5, 6, 7, 8], 'Round of 16', picks)}</div>
       `;
       requestAnimationFrame(() => { fitBracket(); drawConnectors(); });
     }
@@ -367,9 +418,25 @@
       const mentions = document.getElementById('mentions');
 
       if (res && res.standings && res.standings.length) {
-        standings.innerHTML = res.standings.map((s, i) =>
-          `<div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15</span></div>`
-        ).join('');
+        const lead = res.standings[0].points;
+        const hint = selectedName
+          ? `<div class="overlay-hint">Overlaying <b>${selectedName}</b>'s bracket — <span style="color:var(--accent)">✓</span> called it, <span style="color:var(--red)">✗</span> bust. Click again to clear.</div>`
+          : `<div class="overlay-hint">Click a player to overlay their picks on the bracket.</div>`;
+        standings.innerHTML = hint + res.standings.map((s, i) => {
+          const rc = s.round_correct || [0, 0, 0, 0];
+          const champ = labelOf(game, s.predicted_champion);
+          const champCls = s.champion_correct ? 'champ ok' : 'champ bust';
+          const gap = i === 0 ? '' : ` <span style="color:var(--text-tertiary)">(-${lead - s.points})</span>`;
+          const sel = s.name === selectedName ? ' sel' : '';
+          const leader = i === 0 ? ' leader' : '';
+          return `<div class="standing-row${sel}${leader}" data-player="${s.name}">
+            <div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15${gap}</span></div>
+            <div class="breakdown">R16 ${rc[0]}/8 · QF ${rc[1]}/4 · SF ${rc[2]}/2 · F ${rc[3]}/1 · <span class="${champCls}">🏆 ${champ} ${s.champion_correct ? '✓' : '✗'}</span></div>
+          </div>`;
+        }).join('');
+        standings.querySelectorAll('.standing-row').forEach((row) => {
+          row.addEventListener('click', () => selectPlayer(row.dataset.player));
+        });
       } else {
         standings.innerHTML = '<div class="empty">No players entered. Add picks with <code>minutes madness pick</code>.</div>';
       }
@@ -395,6 +462,13 @@
     }
 
     function render(game) {
+      // Keep the overlay selection only if that player still exists.
+      if (selectedName && !(game.players || []).some((p) => p.name === selectedName)) {
+        selectedName = null; selectedPicks = null;
+      } else if (selectedName) {
+        const p = (game.players || []).find((p) => p.name === selectedName);
+        selectedPicks = p ? p.picks : null;
+      }
       current = game;
       renderStatus(game);
       renderBracket(game);
@@ -414,6 +488,7 @@
 
     async function loadBracket(slug) {
       if (!slug || slug === '(no brackets)') return;
+      if (current && current.slug !== slug) { selectedName = null; selectedPicks = null; }
       const game = await invoke('cmd_madness_show', { slug });
       render(game);
     }

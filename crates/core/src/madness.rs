@@ -83,6 +83,18 @@ pub struct PlayerScore {
     pub points: u32,
     /// Count of correctly predicted matchups.
     pub correct: u32,
+    /// Correct picks per round (index 0 = round 1 / Round of 16 … 3 = Final).
+    #[serde(default)]
+    pub round_correct: [u32; 4],
+    /// Round-weighted points earned per round.
+    #[serde(default)]
+    pub round_points: [u32; 4],
+    /// The seed this player picked to win it all (their Final pick).
+    #[serde(default)]
+    pub predicted_champion: u8,
+    /// Whether their predicted champion actually won the bracket.
+    #[serde(default)]
+    pub champion_correct: bool,
     /// The player's tiebreaker guess, if any.
     pub tiebreaker_total: Option<u32>,
     /// Absolute distance between the guess and actual total mentions.
@@ -345,22 +357,33 @@ fn score_players(
     matchups: &[Matchup],
     total_mentions: u32,
 ) -> Vec<PlayerScore> {
+    let actual_champion = matchups.last().map(|m| m.winner).unwrap_or(0);
     let mut scores: Vec<PlayerScore> = players
         .iter()
         .map(|p| {
             let mut points = 0;
             let mut correct = 0;
+            let mut round_correct = [0u32; 4];
+            let mut round_points = [0u32; 4];
             for m in matchups {
                 if p.picks.get(&m.id) == Some(&m.winner) {
-                    points += ROUND_POINTS[(m.round - 1) as usize];
+                    let r = (m.round - 1) as usize;
+                    points += ROUND_POINTS[r];
                     correct += 1;
+                    round_correct[r] += 1;
+                    round_points[r] += ROUND_POINTS[r];
                 }
             }
+            let predicted_champion = p.picks.get(&MATCHUP_COUNT).copied().unwrap_or(0);
             let tiebreaker_delta = p.tiebreaker_total.map(|g| g.abs_diff(total_mentions));
             PlayerScore {
                 name: p.name.clone(),
                 points,
                 correct,
+                round_correct,
+                round_points,
+                predicted_champion,
+                champion_correct: predicted_champion == actual_champion,
                 tiebreaker_total: p.tiebreaker_total,
                 tiebreaker_delta,
             }
