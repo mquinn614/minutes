@@ -91,3 +91,7 @@ tmp/
 docs/assets/demo*
 .agents/napkin.md
 .claude/scheduled_tasks.lock
+
+# Minutes Madness: local word-frequency inputs (may contain real names)
+word_frequency.csv
+*-word-frequency.csv
