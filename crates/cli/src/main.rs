@@ -1038,6 +1038,9 @@ enum MadnessAction {
         /// Path to the transcript to score against.
         #[arg(long = "from")]
         from: PathBuf,
+        /// Output raw JSON (the scored results) instead of formatted text.
+        #[arg(long)]
+        json: bool,
     },
     /// Watch an active `minutes live` session, tallying mentions in real time,
     /// and finalize the bracket when the session stops.
@@ -1059,7 +1062,11 @@ enum MadnessAction {
         json: bool,
     },
     /// List saved brackets.
-    List,
+    List {
+        /// Output raw JSON instead of formatted text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Suggest buzzword terms from a word-frequency file.
     SuggestTerms {
         /// Path to a word-frequency file (word,count / count word / word: count).
@@ -9055,12 +9062,16 @@ fn cmd_madness(action: MadnessAction) -> Result<()> {
             println!("Saved picks for \"{}\" in bracket \"{}\".", player, g.title);
             Ok(())
         }
-        MadnessAction::Score { game, from } => {
+        MadnessAction::Score { game, from, json } => {
             let mut g = madness::load_game(&game)?;
             let text = madness::transcript_text_from_file(&from)?;
             g.score(&text);
             madness::save_game(&g)?;
-            print_madness_results(&g);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&g.results)?);
+            } else {
+                print_madness_results(&g);
+            }
             Ok(())
         }
         MadnessAction::Watch { game, interval } => cmd_madness_watch(&game, interval),
@@ -9073,9 +9084,29 @@ fn cmd_madness(action: MadnessAction) -> Result<()> {
             }
             Ok(())
         }
-        MadnessAction::List => {
+        MadnessAction::List { json } => {
             let slugs = madness::list_games()?;
-            if slugs.is_empty() {
+            if json {
+                let games: Vec<serde_json::Value> = slugs
+                    .iter()
+                    .filter_map(|slug| madness::load_game(slug).ok())
+                    .map(|g| {
+                        let champion = g
+                            .results
+                            .as_ref()
+                            .map(|r| g.label(r.champion))
+                            .unwrap_or_default();
+                        serde_json::json!({
+                            "slug": g.slug,
+                            "title": g.title,
+                            "players": g.players.len(),
+                            "scored": g.results.is_some(),
+                            "champion": champion,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&games)?);
+            } else if slugs.is_empty() {
                 println!(
                     "No brackets yet. Create one with: minutes madness new --title ... --terms FILE"
                 );

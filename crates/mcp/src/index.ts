@@ -3478,6 +3478,102 @@ registerTool(
   }
 );
 
+// ── Minutes Madness (buzzword bracket game) ─────────────────
+
+registerTool(
+  "minutes_madness_list",
+  "List saved Minutes Madness brackets (the buzzword bracket game). Returns each bracket's slug, title, player count, whether it has been scored, and the champion buzzword if scored.",
+  {},
+  { title: "List Madness Brackets", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+    const { stdout } = await runMinutes(["madness", "list", "--json"]);
+    const games = parseJsonOutput(stdout);
+    if (!Array.isArray(games) || games.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "No Minutes Madness brackets yet. Create one with `minutes madness new`." }],
+        structuredContent: { brackets: [] },
+      };
+    }
+    const lines = games.map((g: any) => {
+      const state = g.scored ? `scored — champion: ${g.champion}` : "open";
+      return `- ${g.slug}: "${g.title}" (${g.players} players, ${state})`;
+    });
+    return {
+      content: [{ type: "text" as const, text: `Minutes Madness brackets:\n\n${lines.join("\n")}` }],
+      structuredContent: { brackets: games },
+    };
+  }
+);
+
+registerTool(
+  "minutes_madness_show",
+  "Show a single Minutes Madness bracket: its 16 seeded buzzwords, registered players and their picks, and full results (mention counts, resolved matchups, champion, standings) if it has been scored.",
+  {
+    game: z.string().describe("Bracket slug (from minutes_madness_list)"),
+  },
+  { title: "Show Madness Bracket", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ game }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+    try {
+      const { stdout } = await runMinutes(["madness", "show", "--game", game, "--json"]);
+      const bracket = parseJsonOutput(stdout);
+      const champion =
+        bracket?.results?.champion != null
+          ? `\nChampion: ${bracket.terms?.find((t: any) => t.seed === bracket.results.champion)?.label ?? `#${bracket.results.champion}`}`
+          : "\nNot scored yet.";
+      return {
+        content: [{ type: "text" as const, text: `Bracket "${bracket.title}" (${bracket.terms?.length ?? 0} seeds, ${bracket.players?.length ?? 0} players).${champion}` }],
+        structuredContent: bracket,
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text" as const, text: `Failed to show bracket "${game}": ${error.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+registerTool(
+  "minutes_madness_score",
+  "Score a Minutes Madness bracket against a transcript and crown a champion. Counts buzzword mentions, resolves every matchup by total mentions, and scores players' bracket picks. The transcript can be a meeting markdown file, a live-transcript .jsonl (e.g. ~/.minutes/live-transcript.jsonl), or any plain-text transcript.",
+  {
+    game: z.string().describe("Bracket slug to score (from minutes_madness_list)"),
+    from: z.string().describe("Path to the transcript file (.md, .jsonl, or .txt)"),
+  },
+  { title: "Score Madness Bracket", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ game, from }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+    try {
+      const { stdout } = await runMinutes(["madness", "score", "--game", game, "--from", from, "--json"], 60000);
+      const results = parseJsonOutput(stdout);
+      const championLabel = results?.champion != null ? `#${results.champion}` : "?";
+      const standings = Array.isArray(results?.standings)
+        ? results.standings.map((s: any, i: number) => `  ${i + 1}. ${s.name}: ${s.points} pts (${s.correct} correct)`).join("\n")
+        : "";
+      const summary =
+        `Scored "${game}". Champion seed: ${championLabel}, total mentions: ${results?.total_mentions ?? 0}.` +
+        (standings ? `\n\nStandings:\n${standings}` : "\n\nNo players entered.");
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        structuredContent: results ?? {},
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text" as const, text: `Failed to score bracket "${game}": ${error.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start server ────────────────────────────────────────────
 
 async function main() {
