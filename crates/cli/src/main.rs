@@ -1030,6 +1030,15 @@ enum MadnessAction {
         #[arg(long)]
         tiebreaker: Option<u32>,
     },
+    /// Remove a player from a bracket (e.g. a duplicate or placeholder).
+    RemovePlayer {
+        /// Game slug.
+        #[arg(long)]
+        game: String,
+        /// Player name to remove.
+        #[arg(long)]
+        player: String,
+    },
     /// Score the bracket against a transcript file (.jsonl, .md, or plain text).
     Score {
         /// Game slug.
@@ -9060,6 +9069,16 @@ fn cmd_madness(action: MadnessAction) -> Result<()> {
             })?;
             madness::save_game(&g)?;
             println!("Saved picks for \"{}\" in bracket \"{}\".", player, g.title);
+            Ok(())
+        }
+        MadnessAction::RemovePlayer { game, player } => {
+            let mut g = madness::load_game(&game)?;
+            if g.remove_player(&player) {
+                madness::save_game(&g)?;
+                println!("Removed \"{}\" from \"{}\".", player, g.title);
+            } else {
+                println!("No player named \"{}\" in \"{}\".", player, g.title);
+            }
             Ok(())
         }
         MadnessAction::Score { game, from, json } => {

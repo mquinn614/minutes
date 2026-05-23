@@ -13483,3 +13483,16 @@ pub fn cmd_madness_add_player(
     madness::save_game(&game).map_err(|e| e.to_string())?;
     Ok(game)
 }
+
+/// Remove a player from a bracket by name (e.g. a duplicate or placeholder).
+#[tauri::command]
+pub fn cmd_madness_remove_player(
+    slug: String,
+    name: String,
+) -> Result<minutes_core::madness::BracketGame, String> {
+    use minutes_core::madness;
+    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
+    game.remove_player(&name);
+    madness::save_game(&game).map_err(|e| e.to_string())?;
+    Ok(game)
+}

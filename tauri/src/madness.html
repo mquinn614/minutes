@@ -229,6 +229,9 @@
     .standing .pname { flex: 1; font-weight: 600; }
     .standing .pts { font-family: 'Geist Mono', monospace; color: var(--accent); }
     .standing .corr { font-family: 'Geist Mono', monospace; color: var(--text-secondary); font-size: 11px; }
+    .standing .remove { color: var(--text-tertiary); cursor: pointer; font-size: 12px; padding: 0 2px; opacity: 0; transition: opacity 0.15s ease; }
+    .standing-row:hover .remove { opacity: 1; }
+    .standing .remove:hover { color: var(--red); }
     .breakdown { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-secondary); margin-top: 3px; }
     .breakdown .champ.ok { color: var(--accent); }
     .breakdown .champ.bust { color: var(--red); }
@@ -368,6 +371,18 @@
       }
       renderBracket(current);
       renderLeaderboard(current);
+    }
+
+    // Remove a player from the bracket (duplicate or placeholder cleanup).
+    async function removePlayer(name) {
+      if (!current) return;
+      if (selectedName === name) { selectedName = null; selectedPicks = null; }
+      try {
+        const game = await invoke('cmd_madness_remove_player', { slug: current.slug, name });
+        render(game);
+      } catch (e) {
+        document.getElementById('status').textContent = 'Remove failed: ' + e;
+      }
     }
 
     // Resolve a bracket from a {seed: count} map — mirrors the Rust logic.
@@ -529,12 +544,16 @@
           const sel = s.name === selectedName ? ' sel' : '';
           const leader = i === 0 ? ' leader' : '';
           return `<div class="standing-row${sel}${leader}" data-player="${s.name}">
-            <div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15${gap}</span></div>
+            <div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15${gap}</span><span class="remove" title="Remove ${s.name}">✕</span></div>
             <div class="breakdown">R16 ${rc[0]}/8 · QF ${rc[1]}/4 · SF ${rc[2]}/2 · F ${rc[3]}/1 · <span class="${champCls}">🏆 ${champ} ${s.champion_correct ? '✓' : '✗'}</span></div>
           </div>`;
         }).join('');
         standings.querySelectorAll('.standing-row').forEach((row) => {
           row.addEventListener('click', () => selectPlayer(row.dataset.player));
+          row.querySelector('.remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            removePlayer(row.dataset.player);
+          });
         });
       } else {
         standings.innerHTML = '<div class="empty">No players entered. Add picks with <code>minutes madness pick</code>.</div>';

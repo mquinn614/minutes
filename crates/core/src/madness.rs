@@ -206,6 +206,18 @@ impl BracketGame {
         self.results.as_ref().unwrap()
     }
 
+    /// Remove a player by name. Returns true if a player was removed, and
+    /// re-ranks the remaining players if the bracket was already scored.
+    pub fn remove_player(&mut self, name: &str) -> bool {
+        let before = self.players.len();
+        self.players.retain(|p| p.name != name);
+        let removed = self.players.len() != before;
+        if removed {
+            self.recompute_standings();
+        }
+        removed
+    }
+
     /// Recompute player standings from already-stored results (e.g. after a
     /// player is added post-scoring), without needing the transcript again.
     /// No-op if the bracket has not been scored yet.
@@ -1104,6 +1116,50 @@ mod tests {
         assert_eq!(results.standings[0].name, "Chalk");
         assert_eq!(results.standings[0].points, 32);
         assert_eq!(results.standings[0].correct, 15);
+    }
+
+    #[test]
+    fn remove_player_drops_and_reranks() {
+        let mut game = BracketGame::new("Test", Some("test"), terms_16()).unwrap();
+        let mut chalk: BTreeMap<u8, u8> = BTreeMap::new();
+        for (m, w) in [
+            (1, 1),
+            (2, 8),
+            (3, 5),
+            (4, 4),
+            (5, 6),
+            (6, 3),
+            (7, 7),
+            (8, 2),
+        ] {
+            chalk.insert(m, w);
+        }
+        for (m, w) in [(9, 1), (10, 4), (11, 3), (12, 2), (13, 1), (14, 2), (15, 1)] {
+            chalk.insert(m, w);
+        }
+        game.set_player(Player {
+            name: "A".into(),
+            picks: chalk.clone(),
+            tiebreaker_total: None,
+        })
+        .unwrap();
+        game.set_player(Player {
+            name: "B".into(),
+            picks: chalk,
+            tiebreaker_total: None,
+        })
+        .unwrap();
+        game.score("");
+        assert_eq!(game.results.as_ref().unwrap().standings.len(), 2);
+
+        assert!(game.remove_player("A"));
+        assert_eq!(game.players.len(), 1);
+        // Standings re-ranked to the remaining player only.
+        assert_eq!(game.results.as_ref().unwrap().standings.len(), 1);
+        assert_eq!(game.results.as_ref().unwrap().standings[0].name, "B");
+
+        // Removing a non-existent player is a no-op.
+        assert!(!game.remove_player("nobody"));
     }
 
     #[test]
