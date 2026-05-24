@@ -145,6 +145,13 @@
     .recent-chip.r2 { opacity: 0.5; }
     .recent-chip.r3 { opacity: 0.25; }
 
+    .audio-nudge { display: none; align-items: center; gap: 12px; padding: 9px 20px; border-bottom: 1px solid var(--border-mid); background: var(--accent-soft); flex-shrink: 0; }
+    .audio-nudge.show { display: flex; }
+    .audio-nudge .nudge-msg { font-size: 12px; color: var(--text); flex: 1; }
+    .audio-nudge button { font-family: 'Geist', sans-serif; font-size: 12px; padding: 5px 10px; border-radius: 8px; background: var(--accent); color: #fff; border: 1px solid transparent; cursor: pointer; }
+    @media (prefers-color-scheme: dark) { .audio-nudge button { color: #0D0D0B; } }
+    .audio-nudge button.ghost { background: transparent; color: var(--text-secondary); border-color: var(--border-mid); }
+
     @keyframes flashPulse {
       0% { background-color: var(--accent); }
       100% { background-color: rgba(0, 0, 0, 0); }
@@ -257,6 +264,11 @@
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
   <div class="recent-bar" id="recent-bar"></div>
+  <div class="audio-nudge" id="audio-nudge">
+    <span class="nudge-msg">Not hearing anything yet? Check your mic input and that desktop apps are allowed to use the microphone.</span>
+    <button id="mic-settings-btn">Open microphone settings</button>
+    <button id="nudge-dismiss" class="ghost">Dismiss</button>
+  </div>
   <main>
     <div id="bracket-wrap">
       <svg id="connectors"></svg>
@@ -277,6 +289,7 @@
       <p class="diag" id="model-diag"></p>
       <div class="actions">
         <button class="primary" id="dl-model-btn">Download base model</button>
+        <a id="model-mic-link">Already installed? Check microphone access</a>
         <a id="model-link">Where this comes from ↗</a>
       </div>
     </div>
@@ -355,6 +368,7 @@
     let recording = false;    // a live recording is in progress
     let liveTimer = null;     // 1s tick: refresh status + auto-score
     let startupAt = 0;        // when recording started (for failure detection)
+    let audioOk = false;      // at least one utterance captured this session
     let selectedName = null;  // player whose picks are overlaid on the bracket
     let selectedPicks = null;
     let prevCounts = null;    // mention counts from the previous score, for diffing
@@ -690,7 +704,9 @@
       }
       recording = true;
       startupAt = Date.now();
+      audioOk = false;
       hideModelPrompt();
+      hideAudioNudge();
       updateRecordButton();
       renderStatus(current);
       startLiveTimer();
@@ -699,6 +715,7 @@
     async function stopRecording() {
       recording = false;
       stopLiveTimer();
+      hideAudioNudge();
       try { await invoke('cmd_stop_live_transcript'); } catch (e) { /* may already be stopped */ }
       updateRecordButton();
       await scoreLive(); // final score
@@ -717,12 +734,21 @@
       try { status = await invoke('cmd_live_transcript_status'); } catch (e) { /* ignore */ }
       if (recording && status) {
         updateRecordButton(status);
-        // The session ended on its own (e.g. model missing, or stopped elsewhere).
-        if (!status.active && Date.now() - startupAt > 6000) {
+        if (status.active) {
+          // Capturing — but if no utterance lands in the first ~15s, the mic is
+          // likely muted/blocked or the wrong input is selected.
+          if ((status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
+          else if (!audioOk && Date.now() - startupAt > 15000) showAudioNudge();
+        } else if (Date.now() - startupAt > 6000) {
+          // Session ended/failed to start.
           recording = false;
           stopLiveTimer();
           updateRecordButton();
-          if ((status.line_count || 0) === 0) showModelPrompt(status.diagnostic);
+          if ((status.line_count || 0) === 0) {
+            const diag = (status.diagnostic || '').toLowerCase();
+            if (diag.includes('model')) showModelPrompt(status.diagnostic);
+            else showAudioNudge(); // most likely a mic/permission/device issue
+          }
           await scoreLive();
           if (current) renderStatus(current);
           return;
@@ -730,6 +756,21 @@
       }
       await scoreLive();
     }
+
+    // ── Microphone help ─────────────────────────────────────────
+
+    function micSettingsUrl() {
+      const ua = navigator.userAgent || '';
+      if (/Windows/i.test(ua)) return 'ms-settings:privacy-microphone';
+      if (/Mac/i.test(ua)) return 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
+      return '';
+    }
+    function openMicSettings() {
+      const url = micSettingsUrl();
+      if (url) invoke('cmd_open_file', { path: url }).catch(() => {});
+    }
+    function showAudioNudge() { document.getElementById('audio-nudge').classList.add('show'); }
+    function hideAudioNudge() { document.getElementById('audio-nudge').classList.remove('show'); }
 
     // ── Model-missing prompt ────────────────────────────────────
 
@@ -818,6 +859,9 @@
     document.getElementById('model-link').addEventListener('click', () => {
       invoke('cmd_open_file', { path: 'https://huggingface.co/ggerganov/whisper.cpp' }).catch(() => {});
     });
+    document.getElementById('model-mic-link').addEventListener('click', openMicSettings);
+    document.getElementById('mic-settings-btn').addEventListener('click', openMicSettings);
+    document.getElementById('nudge-dismiss').addEventListener('click', hideAudioNudge);
     window.addEventListener('resize', () => { if (current) { fitBracket(); drawConnectors(); } });
 
     // On open, attach to any session already running (CLI or main app).
