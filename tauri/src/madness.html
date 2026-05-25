@@ -29,6 +29,7 @@
       --accent-hover: #4ADE70;
       --accent-soft: rgba(48, 209, 88, 0.12);
       --red: #FF453A;
+      --gold: #E0B341;
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -44,6 +45,7 @@
         --accent-hover: #B85A3E;
         --accent-soft: rgba(201, 107, 78, 0.10);
         --red: #C0392B;
+        --gold: #C28A2C;
       }
     }
 
@@ -250,6 +252,22 @@
     .bar-row .blabel { display: flex; justify-content: space-between; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-secondary); }
     .bar-row .btrack { height: 6px; background: var(--bg-hover); border-radius: 999px; margin-top: 2px; overflow: hidden; }
     .bar-row .bfill { height: 100%; background: var(--accent); border-radius: 999px; }
+    /* Champion fanfare overlay */
+    .fanfare { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 88%, transparent); }
+    .fanfare.show { display: flex; }
+    #fanfare-fx { position: absolute; inset: 0; pointer-events: none; }
+    .fanfare-stage { position: relative; z-index: 2; }
+    .fanfare-card { position: relative; background: var(--bg-elevated); border: 1.5px solid var(--accent); border-radius: 20px; padding: 34px 52px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.45); animation: fanfarePop 0.5s cubic-bezier(.2,.8,.2,1) both; }
+    .fanfare-card .rays { position: absolute; inset: -70%; z-index: -1; background: repeating-conic-gradient(from 0deg, var(--accent-soft) 0deg 6deg, transparent 6deg 18deg); border-radius: 50%; animation: fanfareSpin 18s linear infinite; opacity: 0.55; }
+    .fanfare-card .crown { font-size: 38px; margin-bottom: 4px; }
+    .fanfare-card .ff-label { font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold); margin-bottom: 10px; }
+    .fanfare-card h2 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 56px; line-height: 1.05; color: var(--text); }
+    .fanfare-card h2 .who { color: var(--accent); font-style: italic; }
+    .fanfare-card .ff-sub { margin-top: 14px; font-family: 'Geist Mono', monospace; font-size: 13px; color: var(--text-secondary); }
+    .fanfare-card .ff-sub b { color: var(--text); font-weight: 500; }
+    .fanfare-hint { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); z-index: 2; }
+    @keyframes fanfarePop { 0% { transform: scale(0.86); opacity: 0; } 60% { transform: scale(1.03); } 100% { transform: scale(1); opacity: 1; } }
+    @keyframes fanfareSpin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -260,6 +278,7 @@
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
     <button id="score-btn" title="Score once against the latest transcript">Score now</button>
     <button id="players-btn" title="Invite players and import their picks">Players</button>
+    <button id="celebrate-btn" title="Replay the champion celebration">🏆</button>
     <button id="refresh-btn" title="Reload from disk">Refresh</button>
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
@@ -312,6 +331,12 @@
       </div>
       <div class="actions"><a id="players-close">Close</a></div>
     </div>
+  </div>
+
+  <div class="fanfare" id="fanfare">
+    <canvas id="fanfare-fx"></canvas>
+    <div class="fanfare-stage" id="fanfare-stage"></div>
+    <div class="fanfare-hint">click anywhere to dismiss</div>
   </div>
 
   <script>
@@ -720,6 +745,12 @@
       updateRecordButton();
       await scoreLive(); // final score
       if (current) renderStatus(current);
+      maybeCelebrate();
+    }
+
+    // Auto-play the fanfare when a recording concludes with a real result.
+    function maybeCelebrate() {
+      if (current && current.results && current.results.total_mentions > 0) showFanfare();
     }
 
     function startLiveTimer() {
@@ -751,6 +782,7 @@
           }
           await scoreLive();
           if (current) renderStatus(current);
+          maybeCelebrate();
           return;
         }
       }
@@ -771,6 +803,69 @@
     }
     function showAudioNudge() { document.getElementById('audio-nudge').classList.add('show'); }
     function hideAudioNudge() { document.getElementById('audio-nudge').classList.remove('show'); }
+
+    // ── Champion fanfare (confetti + fireworks + spotlight card) ──
+    const ffCanvas = document.getElementById('fanfare-fx');
+    const ffCtx = ffCanvas.getContext('2d');
+    let ffRaf = null, ffParticles = [], ffLastBurst = 0, ffStart = 0;
+
+    function ffColors() {
+      const css = getComputedStyle(document.body);
+      const a = css.getPropertyValue('--accent').trim();
+      const g = css.getPropertyValue('--gold').trim();
+      return [a, g, '#E8E4DA', a, '#BF5AF2'];
+    }
+    function ffSizeCanvas() { ffCanvas.width = window.innerWidth; ffCanvas.height = window.innerHeight; }
+    function ffSpawnConfetti() {
+      const cols = ffColors();
+      for (let i = 0; i < 4; i++) ffParticles.push({ k: 'c', x: Math.random() * ffCanvas.width, y: -10, vx: (Math.random() - 0.5) * 1.5, vy: 2 + Math.random() * 2.5, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3, w: 5 + Math.random() * 5, h: 8 + Math.random() * 8, color: cols[(Math.random() * cols.length) | 0] });
+    }
+    function ffBurst(x, y) {
+      const cols = ffColors(); const n = 46, color = cols[(Math.random() * cols.length) | 0];
+      for (let i = 0; i < n; i++) { const a = (Math.PI * 2 * i) / n, sp = 2 + Math.random() * 3.4; ffParticles.push({ k: 's', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, color, life: 1, decay: 0.012 + Math.random() * 0.012 }); }
+    }
+    function ffTick(t) {
+      ffCtx.clearRect(0, 0, ffCanvas.width, ffCanvas.height);
+      if (t - ffStart < 6000 && ffParticles.length < 200) ffSpawnConfetti();
+      if (t - ffLastBurst > 560) { ffBurst(ffCanvas.width * (0.18 + Math.random() * 0.64), ffCanvas.height * (0.16 + Math.random() * 0.4)); ffLastBurst = t; }
+      for (const p of ffParticles) {
+        if (p.k === 'c') { p.x += p.vx; p.y += p.vy; p.vy += 0.03; p.rot += p.vr; ffCtx.save(); ffCtx.translate(p.x, p.y); ffCtx.rotate(p.rot); ffCtx.fillStyle = p.color; ffCtx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ffCtx.restore(); }
+        else { p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.vx *= 0.99; p.life -= p.decay; ffCtx.globalAlpha = Math.max(0, p.life); ffCtx.fillStyle = p.color; ffCtx.beginPath(); ffCtx.arc(p.x, p.y, 2.4, 0, 7); ffCtx.fill(); ffCtx.globalAlpha = 1; }
+      }
+      ffParticles = ffParticles.filter((p) => (p.k === 'c' ? p.y < ffCanvas.height + 20 : p.life > 0));
+      ffRaf = requestAnimationFrame(ffTick);
+    }
+
+    function showFanfare() {
+      if (!current || !current.results) return;
+      const res = current.results;
+      const champ = labelOf(current, res.champion);
+      const champMentions = (res.counts && res.counts[res.champion]) || 0;
+      const winner = (res.standings && res.standings.length) ? res.standings[0].name : null;
+      const headline = winner
+        ? `<span class="who">${winner}</span> wins!`
+        : `<span class="who">${champ}</span> wins the bracket!`;
+      const sub = winner
+        ? `champion buzzword: <b>${champ}</b> · ${champMentions} mentions`
+        : `${res.total_mentions} total buzzword mentions`;
+      document.getElementById('fanfare-stage').innerHTML =
+        `<div class="fanfare-card"><div class="rays"></div>` +
+        `<div class="crown">🏆</div><div class="ff-label">Bracket Champion</div>` +
+        `<h2>${headline}</h2><div class="ff-sub">${sub}</div></div>`;
+      document.getElementById('fanfare').classList.add('show');
+      ffSizeCanvas();
+      ffParticles = []; ffLastBurst = 0; ffStart = performance.now();
+      ffBurst(ffCanvas.width * 0.3, ffCanvas.height * 0.3);
+      ffBurst(ffCanvas.width * 0.7, ffCanvas.height * 0.28);
+      if (ffRaf) cancelAnimationFrame(ffRaf);
+      ffRaf = requestAnimationFrame(ffTick);
+    }
+    function hideFanfare() {
+      document.getElementById('fanfare').classList.remove('show');
+      if (ffRaf) cancelAnimationFrame(ffRaf);
+      ffRaf = null; ffParticles = [];
+      ffCtx.clearRect(0, 0, ffCanvas.width, ffCanvas.height);
+    }
 
     // ── Model-missing prompt ────────────────────────────────────
 
@@ -862,7 +957,13 @@
     document.getElementById('model-mic-link').addEventListener('click', openMicSettings);
     document.getElementById('mic-settings-btn').addEventListener('click', openMicSettings);
     document.getElementById('nudge-dismiss').addEventListener('click', hideAudioNudge);
-    window.addEventListener('resize', () => { if (current) { fitBracket(); drawConnectors(); } });
+    document.getElementById('celebrate-btn').addEventListener('click', showFanfare);
+    document.getElementById('fanfare').addEventListener('click', hideFanfare);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideFanfare(); });
+    window.addEventListener('resize', () => {
+      if (document.getElementById('fanfare').classList.contains('show')) ffSizeCanvas();
+      if (current) { fitBracket(); drawConnectors(); }
+    });
 
     // On open, attach to any session already running (CLI or main app).
     async function syncRecordingState() {
