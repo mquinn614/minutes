@@ -696,7 +696,11 @@ fn run_inner(
 
     let mut was_speaking = false;
     let mut utterance_samples: usize = 0;
-    let max_utterance_secs = config.live_transcript.max_utterance_secs.max(5);
+    // Floor of 2s (not 5) so callers that intentionally want snappier utterance
+    // finalization — e.g. Minutes Madness, which re-scores live and wants a
+    // buzzword to surface fast — can request a short cap. The default config
+    // value (30s) is unchanged, so normal live transcription is unaffected.
+    let max_utterance_secs = config.live_transcript.max_utterance_secs.max(2);
     let max_utterance_samples = (max_utterance_secs as usize).saturating_mul(16000);
 
     // One-time scope warning when the user configured parakeet but the feature

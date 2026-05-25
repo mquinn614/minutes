@@ -11253,7 +11253,12 @@ impl Drop for LiveActiveGuard {
 
 /// Shared live transcript session runner. Spawned on a background thread by both
 /// cmd_start_live_transcript and handle_live_shortcut_event.
-fn run_live_session(app: tauri::AppHandle, active: Arc<AtomicBool>, stop_flag: Arc<AtomicBool>) {
+fn run_live_session(
+    app: tauri::AppHandle,
+    active: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
+    max_utterance_cap: Option<u64>,
+) {
     let _guard = LiveActiveGuard {
         active,
         app: app.clone(),
@@ -11263,6 +11268,15 @@ fn run_live_session(app: tauri::AppHandle, active: Arc<AtomicBool>, stop_flag: A
     // Re-validate the pinned input device for mid-session disconnects
     // (#189). In-memory only; startup-side persistence is in main.rs.
     minutes_core::capture::auto_heal_missing_recording_device(&mut config);
+
+    // Caller-supplied utterance cap (in-memory only — never persisted, so the
+    // main app's live transcript default is untouched). Minutes Madness passes
+    // a short value so buzzwords surface fast for live scoring.
+    if let Some(secs) = max_utterance_cap {
+        if secs > 0 {
+            config.live_transcript.max_utterance_secs = secs;
+        }
+    }
 
     if let Ok(workspace) = crate::context::create_workspace(&config) {
         update_assistant_live_context(&workspace, true);
@@ -11400,6 +11414,7 @@ fn try_acquire_live(state: &AppState) -> Result<(), String> {
 pub fn cmd_start_live_transcript(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    cap: Option<u64>,
 ) -> Result<(), String> {
     try_acquire_live(&state)?;
 
@@ -11408,7 +11423,7 @@ pub fn cmd_start_live_transcript(
     stop_flag.store(false, Ordering::Relaxed);
 
     let app_clone = app.clone();
-    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag));
+    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, cap));
 
     if let Some(win) = app.get_webview_window("main") {
         win.emit("live-transcript:started", ()).ok();
@@ -11483,7 +11498,7 @@ pub fn handle_live_shortcut_event(
         let stop_flag = state.live_transcript_stop_flag.clone();
         stop_flag.store(false, Ordering::Relaxed);
         let app_clone = app.clone();
-        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag));
+        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, None));
         if let Some(win) = app.get_webview_window("main") {
             win.emit("live-transcript:started", ()).ok();
         }
