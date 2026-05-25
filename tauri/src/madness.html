@@ -253,12 +253,16 @@
     .bar-row .btrack { height: 6px; background: var(--bg-hover); border-radius: 999px; margin-top: 2px; overflow: hidden; }
     .bar-row .bfill { height: 100%; background: var(--accent); border-radius: 999px; }
     /* Champion fanfare overlay */
-    .fanfare { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 88%, transparent); }
+    .fanfare { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; background: rgba(8, 8, 6, 0.93); overflow: hidden; }
     .fanfare.show { display: flex; }
-    #fanfare-fx { position: absolute; inset: 0; pointer-events: none; }
+    .spotlights { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+    .spotlights .beam { position: absolute; top: -14%; width: 22vmax; height: 150vmax; background: linear-gradient(to bottom, rgba(255, 248, 230, 0.22), rgba(255, 248, 230, 0) 60%); filter: blur(16px); mix-blend-mode: screen; transform-origin: top center; }
+    .spotlights .beam.left { left: 3%; animation: ffSwayL 7s ease-in-out infinite; }
+    .spotlights .beam.right { right: 3%; animation: ffSwayR 7s ease-in-out infinite; }
+    .spotlights .pool { position: absolute; left: 50%; top: 52%; width: 60vmax; height: 32vmax; transform: translate(-50%, -50%); background: radial-gradient(ellipse at center, rgba(255, 248, 230, 0.16), transparent 62%); mix-blend-mode: screen; }
+    #fanfare-fx { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
     .fanfare-stage { position: relative; z-index: 2; }
     .fanfare-card { position: relative; background: var(--bg-elevated); border: 1.5px solid var(--accent); border-radius: 20px; padding: 34px 52px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.45); animation: fanfarePop 0.5s cubic-bezier(.2,.8,.2,1) both; }
-    .fanfare-card .rays { position: absolute; inset: -70%; z-index: -1; background: repeating-conic-gradient(from 0deg, var(--accent-soft) 0deg 6deg, transparent 6deg 18deg); border-radius: 50%; animation: fanfareSpin 18s linear infinite; opacity: 0.55; }
     .fanfare-card .crown { font-size: 38px; margin-bottom: 4px; }
     .fanfare-card .ff-label { font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold); margin-bottom: 10px; }
     .fanfare-card h2 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 56px; line-height: 1.05; color: var(--text); }
@@ -267,7 +271,8 @@
     .fanfare-card .ff-sub b { color: var(--text); font-weight: 500; }
     .fanfare-hint { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); z-index: 2; }
     @keyframes fanfarePop { 0% { transform: scale(0.86); opacity: 0; } 60% { transform: scale(1.03); } 100% { transform: scale(1); opacity: 1; } }
-    @keyframes fanfareSpin { to { transform: rotate(360deg); } }
+    @keyframes ffSwayL { 0%, 100% { transform: rotate(27deg); } 50% { transform: rotate(31deg); } }
+    @keyframes ffSwayR { 0%, 100% { transform: rotate(-27deg); } 50% { transform: rotate(-31deg); } }
   </style>
 </head>
 <body>
@@ -334,6 +339,7 @@
   </div>
 
   <div class="fanfare" id="fanfare">
+    <div class="spotlights"><div class="beam left"></div><div class="beam right"></div><div class="pool"></div></div>
     <canvas id="fanfare-fx"></canvas>
     <div class="fanfare-stage" id="fanfare-stage"></div>
     <div class="fanfare-hint">click anywhere to dismiss</div>
@@ -849,7 +855,7 @@
         ? `champion buzzword: <b>${champ}</b> · ${champMentions} mentions`
         : `${res.total_mentions} total buzzword mentions`;
       document.getElementById('fanfare-stage').innerHTML =
-        `<div class="fanfare-card"><div class="rays"></div>` +
+        `<div class="fanfare-card">` +
         `<div class="crown">🏆</div><div class="ff-label">Bracket Champion</div>` +
         `<h2>${headline}</h2><div class="ff-sub">${sub}</div></div>`;
       document.getElementById('fanfare').classList.add('show');
