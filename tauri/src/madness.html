@@ -725,9 +725,9 @@
     async function startRecording() {
       if (!current) return;
       try {
-        // Short utterance cap (3s) so buzzwords surface fast for live scoring;
+        // Short utterance cap (2s) so buzzwords surface fast for live scoring;
         // the main app's live transcript keeps its default cap.
-        await invoke('cmd_start_live_transcript', { cap: 3 });
+        await invoke('cmd_start_live_transcript', { cap: 2 });
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine — just attach to it.
         if (!/active|already/i.test(String(e))) {
@@ -763,7 +763,7 @@
 
     function startLiveTimer() {
       if (liveTimer) return;
-      liveTimer = setInterval(liveTick, 1000);
+      liveTimer = setInterval(liveTick, 500);
       liveTick();
     }
     function stopLiveTimer() { clearInterval(liveTimer); liveTimer = null; }
