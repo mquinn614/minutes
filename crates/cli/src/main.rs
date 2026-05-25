@@ -8914,7 +8914,7 @@ fn cmd_live(config: &Config) -> Result<()> {
         }
     });
 
-    match minutes_core::live_transcript::run(stop, config, live_context_session_id) {
+    match minutes_core::live_transcript::run(stop, config, live_context_session_id, false) {
         Ok((lines, duration, path)) => {
             eprintln!("\nLive transcript complete:");
             eprintln!("  {} utterances in {:.0}s", lines, duration);

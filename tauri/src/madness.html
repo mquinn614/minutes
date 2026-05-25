@@ -160,6 +160,19 @@
     }
     .slot.flash { animation: flashPulse 0.9s ease-out; }
 
+    @keyframes correctPulse {
+      0% { background-color: var(--red); }
+      100% { background-color: rgba(0, 0, 0, 0); }
+    }
+    .slot.correct-flash { animation: correctPulse 0.9s ease-out; }
+    .correction-toast {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%) translateY(8px);
+      background: var(--red); color: #fff; font-family: 'Geist Mono', monospace; font-size: 11px;
+      padding: 5px 12px; border-radius: 999px; opacity: 0; pointer-events: none; z-index: 60;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .correction-toast.show { opacity: 0.95; transform: translateX(-50%) translateY(0); }
+
     main { flex: 1; display: flex; min-height: 0; }
 
     /* Bracket area */
@@ -288,6 +301,7 @@
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
   <div class="recent-bar" id="recent-bar"></div>
+  <div class="correction-toast" id="correction-toast"></div>
   <div class="audio-nudge" id="audio-nudge">
     <span class="nudge-msg">Not hearing anything yet? Check your mic input and that desktop apps are allowed to use the microphone.</span>
     <button id="mic-settings-btn">Open microphone settings</button>
@@ -405,6 +419,7 @@
     let prevCounts = null;    // mention counts from the previous score, for diffing
     let recentMentions = [];  // seeds that recently ticked up, most recent first
     let flashSeeds = [];      // seeds to pulse on the next bracket render
+    let correctSeeds = [];    // seeds to red-flash (a partial hit was revised away)
 
     // Toggle the player-bracket overlay. Clicking the selected player clears it.
     function selectPlayer(name) {
@@ -517,6 +532,12 @@
           bracket.querySelectorAll(`.slot[data-seed="${s}"]`).forEach((el) => el.classList.add('flash'));
         }
         flashSeeds = [];
+      }
+      if (correctSeeds.length) {
+        for (const s of correctSeeds) {
+          bracket.querySelectorAll(`.slot[data-seed="${s}"]`).forEach((el) => el.classList.add('correct-flash'));
+        }
+        correctSeeds = [];
       }
       requestAnimationFrame(() => { fitBracket(); drawConnectors(); });
     }
@@ -635,14 +656,22 @@
       // Diff mention counts against the previous score to drive flash + recents.
       const res = game.results;
       if (res && prevCounts) {
-        const inc = [];
+        const inc = [], dec = [];
         for (const s of SEED_ORDER) {
           const d = (res.counts[s] || 0) - (prevCounts[s] || 0);
           for (let i = 0; i < d; i++) inc.push(s);
+          if (d < 0) dec.push(s);
         }
         if (inc.length) {
           flashSeeds = [...new Set(inc)];
           recentMentions = [...inc, ...recentMentions].slice(0, 6);
+        }
+        // A buzzword a partial provisionally counted got revised away when the
+        // utterance finalized — show a deliberate "correction" rather than a
+        // silent decrement.
+        if (dec.length) {
+          correctSeeds = [...new Set(dec)];
+          showCorrection(correctSeeds);
         }
       }
       prevCounts = res ? Object.assign({}, res.counts) : null;
@@ -652,6 +681,17 @@
       renderBracket(game);
       renderLeaderboard(game);
       renderRecent();
+    }
+
+    let correctionTimer = null;
+    function showCorrection(seeds) {
+      if (!current) return;
+      const names = seeds.map((s) => labelOf(current, s)).join(', ');
+      const el = document.getElementById('correction-toast');
+      el.textContent = `✗ correction — ${names} walked back`;
+      el.classList.add('show');
+      clearTimeout(correctionTimer);
+      correctionTimer = setTimeout(() => el.classList.remove('show'), 2600);
     }
 
     function renderRecent() {
@@ -725,9 +765,11 @@
     async function startRecording() {
       if (!current) return;
       try {
-        // Short utterance cap (2s) so buzzwords surface fast for live scoring;
-        // the main app's live transcript keeps its default cap.
-        await invoke('cmd_start_live_transcript', { cap: 2 });
+        // Partials drive flash speed (buzzwords surface before an utterance
+        // finalizes), so we can keep a longer 10s cap for clean transcripts and
+        // intact multi-word phrases. Both are Madness-only; the core app's live
+        // transcript is untouched.
+        await invoke('cmd_start_live_transcript', { cap: 10, partials: true });
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine — just attach to it.
         if (!/active|already/i.test(String(e))) {

@@ -543,6 +543,7 @@ pub fn run(
     stop_flag: Arc<AtomicBool>,
     config: &Config,
     existing_context_session_id: Option<String>,
+    emit_partials: bool,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     let mark_precreated_session_failed = |error: &MinutesError| {
         if let Some(session_id) = existing_context_session_id.as_deref() {
@@ -600,7 +601,7 @@ pub fn run(
         )
     };
 
-    match run_inner(stop_flag, config, context_session_id.clone()) {
+    match run_inner(stop_flag, config, context_session_id.clone(), emit_partials) {
         Ok((lines, duration, path)) => {
             if let Some(session_id) = context_session_id.as_deref() {
                 let wav_path = pid::live_transcript_wav_path();
@@ -632,12 +633,32 @@ pub fn run(
     }
 }
 
+/// Mirror the in-progress utterance's running transcription to a sidecar
+/// (`live-transcript.partial`) when opted in (Minutes Madness). No-op when
+/// `emit` is false, so the core app/CLI never touch the file.
+#[cfg(feature = "whisper")]
+fn write_live_partial(emit: bool, text: &str) {
+    if emit {
+        let _ = std::fs::write(pid::live_transcript_partial_path(), text);
+    }
+}
+
+/// Clear the partial sidecar (on finalize and at session end). No-op when off.
+#[cfg(feature = "whisper")]
+fn clear_live_partial(emit: bool) {
+    if emit {
+        let _ = std::fs::remove_file(pid::live_transcript_partial_path());
+    }
+}
+
 #[cfg(feature = "whisper")]
 fn run_inner(
     stop_flag: Arc<AtomicBool>,
     config: &Config,
     context_session_id: Option<String>,
+    emit_partials: bool,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
+    clear_live_partial(emit_partials); // drop any stale partial from a crashed prior session
     let mut whisper_ctx: Option<whisper_rs::WhisperContext> = None;
 
     // Start audio stream FIRST — validate mic access before truncating any files
@@ -990,9 +1011,13 @@ fn run_inner(
                     parakeet_utterance_samples.extend_from_slice(&chunk.samples);
                 }
             } else if let Ok(whisper_ctx) = ensure_live_whisper_ctx(&mut whisper_ctx, config) {
-                if let Some(_sr) = streaming.feed(&chunk.samples, whisper_ctx) {
-                    // Intentionally not emitted in event-bus v0. Partial
-                    // revisions are high-volume and need a gated v1 contract.
+                if let Some(sr) = streaming.feed(&chunk.samples, whisper_ctx) {
+                    // Not emitted on the event bus (partials are high-volume and
+                    // need a gated v1 contract). When opted in, mirror the
+                    // running partial text to the sidecar for live scoring.
+                    if !sr.is_final {
+                        write_live_partial(emit_partials, &sr.text);
+                    }
                 }
             }
 
@@ -1025,6 +1050,7 @@ fn run_inner(
                     &mut whisper_ctx,
                     "standalone",
                 );
+                clear_live_partial(emit_partials); // utterance finalized → its text is now in the JSONL
                 if !write_ok {
                     tracing::error!("JSONL write failed — stopping session to prevent data loss");
                     break;
@@ -1060,6 +1086,7 @@ fn run_inner(
                 &mut whisper_ctx,
                 "standalone",
             );
+            clear_live_partial(emit_partials); // utterance finalized → its text is now in the JSONL
             if !write_ok {
                 tracing::error!("JSONL write failed — stopping session to prevent data loss");
                 break;
@@ -1070,6 +1097,7 @@ fn run_inner(
         }
     }
 
+    clear_live_partial(emit_partials); // session ended — leave no stale partial behind
     let (lines, duration, path) = writer.finalize();
     clear_status_file();
     tracing::info!(
@@ -1086,6 +1114,8 @@ fn run_inner(
 pub fn run(
     _stop_flag: Arc<AtomicBool>,
     _config: &Config,
+    _existing_context_session_id: Option<String>,
+    _emit_partials: bool,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     Err(
         TranscribeError::ModelLoadError("live transcript requires the whisper feature".into())

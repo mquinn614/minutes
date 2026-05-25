@@ -45,6 +45,15 @@ pub fn live_transcript_wav_path() -> PathBuf {
     Config::minutes_dir().join("live-transcript.wav")
 }
 
+/// Path to the in-progress partial-transcript sidecar
+/// (`~/.minutes/live-transcript.partial`). Only written when a caller opts into
+/// partial emission (Minutes Madness); holds the current, not-yet-finalized
+/// utterance text so live scoring can flash buzzwords before the utterance
+/// closes. Cleared on finalize and at session end.
+pub fn live_transcript_partial_path() -> PathBuf {
+    Config::minutes_dir().join("live-transcript.partial")
+}
+
 /// Path to the live transcript status sidecar (`~/.minutes/live-transcript-status.json`).
 pub fn live_transcript_status_path() -> PathBuf {
     Config::minutes_dir().join("live-transcript-status.json")

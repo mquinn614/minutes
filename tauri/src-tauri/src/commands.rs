@@ -11258,6 +11258,7 @@ fn run_live_session(
     active: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
     max_utterance_cap: Option<u64>,
+    emit_partials: bool,
 ) {
     let _guard = LiveActiveGuard {
         active,
@@ -11310,6 +11311,7 @@ fn run_live_session(
         stop_flag.clone(),
         &config,
         live_context_session_id.clone(),
+        emit_partials,
     );
 
     stop_flag.store(false, Ordering::Relaxed);
@@ -11415,6 +11417,7 @@ pub fn cmd_start_live_transcript(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     cap: Option<u64>,
+    partials: Option<bool>,
 ) -> Result<(), String> {
     try_acquire_live(&state)?;
 
@@ -11422,8 +11425,9 @@ pub fn cmd_start_live_transcript(
     let stop_flag = state.live_transcript_stop_flag.clone();
     stop_flag.store(false, Ordering::Relaxed);
 
+    let emit_partials = partials.unwrap_or(false);
     let app_clone = app.clone();
-    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, cap));
+    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, cap, emit_partials));
 
     if let Some(win) = app.get_webview_window("main") {
         win.emit("live-transcript:started", ()).ok();
@@ -11498,7 +11502,7 @@ pub fn handle_live_shortcut_event(
         let stop_flag = state.live_transcript_stop_flag.clone();
         stop_flag.store(false, Ordering::Relaxed);
         let app_clone = app.clone();
-        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, None));
+        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, None, false));
         if let Some(win) = app.get_webview_window("main") {
             win.emit("live-transcript:started", ()).ok();
         }
@@ -13459,11 +13463,24 @@ pub fn cmd_madness_score(
 ) -> Result<minutes_core::madness::BracketGame, String> {
     use minutes_core::madness;
     let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
-    let path = match from {
-        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
-        _ => minutes_core::pid::live_transcript_jsonl_path(),
+    let (path, live) = match from {
+        Some(p) if !p.trim().is_empty() => (std::path::PathBuf::from(p), false),
+        _ => (minutes_core::pid::live_transcript_jsonl_path(), true),
     };
-    let text = madness::transcript_text_from_file(&path).map_err(|e| e.to_string())?;
+    let mut text = madness::transcript_text_from_file(&path).map_err(|e| e.to_string())?;
+    // Live scoring: fold in the current in-progress utterance (partial sidecar)
+    // so a buzzword flashes before its utterance finalizes. The partial only
+    // covers the not-yet-finalized utterance, so this doesn't double-count.
+    if live {
+        if let Ok(partial) =
+            std::fs::read_to_string(minutes_core::pid::live_transcript_partial_path())
+        {
+            if !partial.trim().is_empty() {
+                text.push('\n');
+                text.push_str(&partial);
+            }
+        }
+    }
     game.score(&text);
     madness::save_game(&game).map_err(|e| e.to_string())?;
     Ok(game)
