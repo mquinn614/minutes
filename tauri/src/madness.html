@@ -270,8 +270,9 @@
     .fanfare.show { display: flex; }
     .spotlights { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
     .spotlights .beam { position: absolute; top: -14%; width: 22vmax; height: 150vmax; background: linear-gradient(to bottom, rgba(255, 248, 230, 0.22), rgba(255, 248, 230, 0) 60%); filter: blur(16px); mix-blend-mode: screen; transform-origin: top center; }
-    .spotlights .beam.left { left: 3%; animation: ffSwayL 7s ease-in-out infinite; }
-    .spotlights .beam.right { right: 3%; animation: ffSwayR 7s ease-in-out infinite; }
+    .spotlights .beam { transition: transform 0.4s ease; }
+    .spotlights .beam.left { left: 3%; }
+    .spotlights .beam.right { right: 3%; }
     .spotlights .pool { position: absolute; left: 50%; top: 52%; width: 60vmax; height: 32vmax; transform: translate(-50%, -50%); background: radial-gradient(ellipse at center, rgba(255, 248, 230, 0.16), transparent 62%); mix-blend-mode: screen; }
     #fanfare-fx { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
     .fanfare-stage { position: relative; z-index: 2; }
@@ -284,8 +285,6 @@
     .fanfare-card .ff-sub b { color: var(--text); font-weight: 500; }
     .fanfare-hint { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); z-index: 2; }
     @keyframes fanfarePop { 0% { transform: scale(0.86); opacity: 0; } 60% { transform: scale(1.03); } 100% { transform: scale(1); opacity: 1; } }
-    @keyframes ffSwayL { 0%, 100% { transform: rotate(-34deg); } 50% { transform: rotate(-30deg); } }
-    @keyframes ffSwayR { 0%, 100% { transform: rotate(34deg); } 50% { transform: rotate(30deg); } }
   </style>
 </head>
 <body>
@@ -909,7 +908,28 @@
       ffBurst(ffCanvas.width * 0.7, ffCanvas.height * 0.28);
       if (ffRaf) cancelAnimationFrame(ffRaf);
       ffRaf = requestAnimationFrame(ffTick);
+      requestAnimationFrame(aimSpotlights);
     }
+    // Aim each top-corner spotlight beam so its centerline converges on the
+    // champion card — size-independent (recomputed on show + resize).
+    function aimSpotlights() {
+      const card = document.querySelector('.fanfare-card');
+      if (!card) return;
+      const cr = card.getBoundingClientRect();
+      const cx = cr.left + cr.width / 2;
+      const cy = cr.top + cr.height / 2;
+      for (const side of ['left', 'right']) {
+        const beam = document.querySelector('.spotlights .beam.' + side);
+        if (!beam) continue;
+        beam.style.transform = 'none';
+        const br = beam.getBoundingClientRect();
+        const pivotX = br.left + br.width / 2; // transform-origin: top center
+        const pivotY = br.top;
+        const deg = Math.atan2(cx - pivotX, cy - pivotY) * 180 / Math.PI;
+        beam.style.transform = `rotate(${-deg}deg)`;
+      }
+    }
+
     function hideFanfare() {
       document.getElementById('fanfare').classList.remove('show');
       if (ffRaf) cancelAnimationFrame(ffRaf);
@@ -1011,7 +1031,7 @@
     document.getElementById('fanfare').addEventListener('click', hideFanfare);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideFanfare(); });
     window.addEventListener('resize', () => {
-      if (document.getElementById('fanfare').classList.contains('show')) ffSizeCanvas();
+      if (document.getElementById('fanfare').classList.contains('show')) { ffSizeCanvas(); aimSpotlights(); }
       if (current) { fitBracket(); drawConnectors(); }
     });
 
