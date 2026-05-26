@@ -689,6 +689,11 @@ fn run_inner(
         config.transcription.language.clone(),
         config.transcription.partial_max_secs,
     );
+    // Minutes Madness: snappier partial cadence for live scoring. Off by
+    // default (core/CLI keep the standard 2s interval).
+    if emit_partials {
+        streaming.set_partial_interval_secs(1.5);
+    }
     let standalone_backend = config.effective_live_transcript_backend();
     #[cfg(target_os = "macos")]
     let mut apple_utterance_samples: Vec<f32> = Vec::new();

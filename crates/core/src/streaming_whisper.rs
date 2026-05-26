@@ -78,6 +78,10 @@ pub struct StreamingWhisper {
     /// Cap on partial-transcription buffer length, in samples at 16kHz. Past
     /// this length, partials are skipped (final still runs at end of utterance).
     partial_max_samples: usize,
+    /// How often to run a partial pass, in samples at 16kHz. Defaults to
+    /// `PARTIAL_INTERVAL_SAMPLES` (2s); a caller (Minutes Madness) can shorten
+    /// it for snappier live scoring via `set_partial_interval_secs`.
+    partial_interval_samples: usize,
 }
 
 impl StreamingWhisper {
@@ -108,7 +112,18 @@ impl StreamingWhisper {
             language,
             has_created_state: false,
             partial_max_samples,
+            partial_interval_samples: PARTIAL_INTERVAL_SAMPLES,
         }
+    }
+
+    /// Override how often partial passes run (in seconds), for callers that
+    /// want snappier live updates (e.g. Minutes Madness). Floored at 0.5s so a
+    /// pass can't be requested faster than it can plausibly complete. The
+    /// default (2s) is used when this is never called, so core behavior is
+    /// unchanged.
+    pub fn set_partial_interval_secs(&mut self, secs: f32) {
+        let samples = (secs * 16000.0).max(8000.0) as usize;
+        self.partial_interval_samples = samples;
     }
 
     /// Feed audio samples. Returns a partial result if enough audio has
@@ -134,7 +149,7 @@ impl StreamingWhisper {
         }
 
         // Only transcribe if enough new audio AND enough total audio
-        if self.samples_since_partial >= PARTIAL_INTERVAL_SAMPLES
+        if self.samples_since_partial >= self.partial_interval_samples
             && self.audio_buffer.len() >= MIN_TRANSCRIBE_SAMPLES
         {
             self.samples_since_partial = 0;
