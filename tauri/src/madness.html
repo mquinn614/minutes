@@ -1082,11 +1082,19 @@
         }
       } catch (e) { /* if the readiness check fails, fall through and try anyway */ }
       try {
-        // Partials drive flash speed (buzzwords surface before an utterance
-        // finalizes), so we can keep a longer 10s cap for clean transcripts and
-        // intact multi-word phrases. Both are Madness-only; the core app's live
-        // transcript is untouched.
-        await invoke('cmd_start_live_transcript', { cap: 10, partials: true });
+        // Live-transcription tuning, Madness-only (core live transcript untouched):
+        // - macOS (Metal GPU): partials on + 10s cap. Every ~1.5s we re-transcribe
+        //   the growing buffer so buzzwords flash within a second or two; the GPU
+        //   keeps up easily and the long cap keeps multi-word phrases intact.
+        // - Windows (CPU-only whisper build): partials OFF + shorter cap. On CPU
+        //   the partial re-transcriptions can't keep up with real time, so whisper
+        //   falls progressively behind AND the bounded audio queue overflows,
+        //   dropping spoken buzzwords entirely. Dropping partials cuts the whisper
+        //   load ~6-7x; a shorter cap finalizes utterances faster so words still
+        //   surface in a few seconds. Net: accurate + roughly real-time on CPU.
+        const cpuBound = /Windows/i.test(navigator.userAgent || '');
+        const liveOpts = cpuBound ? { cap: 6, partials: false } : { cap: 10, partials: true };
+        await invoke('cmd_start_live_transcript', liveOpts);
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine; just attach to it.
         if (!/active|already/i.test(String(e))) {
