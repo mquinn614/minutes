@@ -108,7 +108,7 @@
     }
     .modal h3 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 20px; margin-bottom: 8px; }
     .modal p { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.5; }
-    .modal .diag { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-tertiary); }
+    .modal .diag { font-family: 'Geist Mono', monospace; font-size: 10px; color: var(--text-secondary); }
     .modal .actions { display: flex; flex-direction: column; gap: 10px; align-items: center; }
     .modal a { color: var(--accent); font-size: 12px; text-decoration: none; cursor: pointer; }
     .modal a:hover { text-decoration: underline; }
@@ -124,9 +124,20 @@
     .modal hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     .modal .tm-pick { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
     .modal.wide { max-width: 560px; }
-    #bw-title { width: 100%; }
-    #bw-rows { max-height: 50vh; overflow-y: auto; margin: 6px 0 10px; }
-    .bw-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    #bw-title {
+      width: 100%; box-sizing: border-box;
+      background: var(--bg-hover); color: var(--text);
+      border: 1px solid var(--border-mid); border-radius: 6px;
+      padding: 8px 9px; font-family: 'Geist Mono', monospace; font-size: 12px;
+      margin-bottom: 4px;
+    }
+    /* Let the editor grow tall enough to show all 16 rows without scrolling on
+       typical laptop screens; the rows flex while title/hint/actions stay put.
+       On very short screens the row list still scrolls as a fallback. */
+    #buzzwords-modal .modal { display: flex; flex-direction: column; max-height: 94vh; }
+    /* padding-right keeps the scrollbar off the per-row ✕ buttons */
+    #bw-rows { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 6px 0 10px; padding-right: 10px; }
+    .bw-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
     .bw-row.dragging { opacity: 0.4; }
     .bw-row.dragover { box-shadow: inset 0 2px 0 var(--accent); }
     .bw-row .bw-seed { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); width: 22px; text-align: right; flex-shrink: 0; }
@@ -234,6 +245,9 @@
     .slot.win { color: var(--text); background: var(--accent-soft); }
     .slot.win .label { color: var(--accent); font-weight: 500; }
     .slot.win .count { color: var(--accent); }
+    /* A matchup slot whose participant hasn't been decided yet (no mentions). */
+    .slot.empty { color: var(--text-tertiary); opacity: 0.5; }
+    .slot.empty .seed, .slot.empty .label { color: var(--text-tertiary); }
 
     .champion {
       text-align: center; padding: 14px 12px; border-radius: 12px;
@@ -303,13 +317,13 @@
   <header>
     <h1>Minutes <span style="font-style:italic">Madness</span></h1>
     <span class="spacer"></span>
-    <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Change Buzzwords</button>
+    <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Modify Buzzwords</button>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
-    <button id="transcript-btn" title="Score against a transcript file or pasted text — no recording needed">Transcript Mode</button>
+    <button id="transcript-btn" title="Score against a transcript file or pasted text. No recording needed.">Transcript Mode</button>
     <button id="players-btn" title="Invite players and import their picks">Players</button>
     <button id="celebrate-btn" title="Replay the champion celebration">🏆</button>
   </header>
-  <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
+  <div class="status" id="status">No brackets yet. Create one with <code>minutes madness new</code>.</div>
   <div class="recent-bar" id="recent-bar"></div>
   <div class="correction-toast" id="correction-toast"></div>
   <div class="audio-nudge" id="audio-nudge">
@@ -365,7 +379,7 @@
   <div class="modal-backdrop" id="transcript-modal">
     <div class="modal wide">
       <h3>Transcript Mode</h3>
-      <p>Score this bracket against a transcript of the call — no recording needed.</p>
+      <p>Score this bracket against a transcript of the call. No recording needed.</p>
       <div class="tm-pick">
         <button id="tm-file-btn">Choose file…</button>
         <button id="tm-paste-btn">Paste text</button>
@@ -383,9 +397,9 @@
 
   <div class="modal-backdrop" id="buzzwords-modal">
     <div class="modal wide">
-      <h3>Change Buzzwords</h3>
+      <h3>Modify Buzzwords</h3>
       <input type="text" id="bw-title" placeholder="Bracket title (e.g. Q1 2026 All-Hands)" />
-      <p class="diag">Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add spelling variants with <code>|</code> — e.g. <code>AI | A.I. | artificial intelligence</code>.</p>
+      <p class="diag">Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add variants with <code>|</code>, e.g. <code>AI | A.I. | artificial intelligence</code>.</p>
       <div id="bw-rows"></div>
       <div class="diag" id="bw-msg"></div>
       <div class="actions" style="flex-direction:row; gap:10px; justify-content:flex-end; align-items:center;">
@@ -412,11 +426,14 @@
       : async (cmd, args) => mockInvoke(cmd, args);
 
     function mockGame() {
-      const labels = ['AI', 'revenue', 'growth', 'accelerate', 'OKRs', 'scale',
-        'circle back', 'double click', 'follow up', 'low-hanging fruit',
-        'move the needle', 'deep dive', 'value-add', 'north star', 'synergy', 'leverage'];
+      const labels = ['synergy', 'AI-powered', 'headwinds', 'leverage', 'circle back',
+        'low-hanging fruit', 'double-click', 'bandwidth', 'north star', 'value-add',
+        'paradigm shift', 'move the needle', 'boil the ocean', 'table stakes',
+        'RTO', 'pivot'];
       const terms = labels.map((label, i) => ({ seed: i + 1, label, aliases: [] }));
-      const c = { 1: 4, 2: 2, 3: 1, 4: 1, 5: 0, 6: 0, 7: 1, 8: 1, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 1, 15: 0, 16: 0 };
+      // Every word gets a mention (more for better seeds) so the sample bracket
+      // resolves fully in preview; the empty-slot logic is exercised live/import.
+      const c = {}; for (let s = 1; s <= 16; s++) c[s] = 17 - s;
       const r = resolve(c);
       const chalkPicks = {}; r.matchups.forEach((m) => { chalkPicks[m.id] = m.winner; });
       const danaPicks = Object.assign({}, chalkPicks);
@@ -488,8 +505,14 @@
       }
     }
 
-    // Resolve a bracket from a {seed: count} map — mirrors the Rust logic.
-    function resolve(counts) {
+    // Resolve a bracket from a {seed: count} map. A matchup only advances a
+    // winner once at least one of its two words has been mentioned — until then
+    // its winner is 0 (undecided) and the next round's slot stays empty. So at
+    // launch (all-zero counts) only the round-of-16 seeds show; inner rounds
+    // populate live as words are spoken. `maxRound` caps how far winners
+    // advance, which drives the round-by-round reveal animation (default: all).
+    function resolveUpTo(counts, maxRound) {
+      if (maxRound == null) maxRound = 99;
       let slots = SEED_ORDER.slice();
       const matchups = [];
       let id = 1, round = 1;
@@ -497,8 +520,11 @@
         const next = [];
         for (let i = 0; i < slots.length; i += 2) {
           const a = slots[i], b = slots[i + 1];
-          const ca = counts[a] || 0, cb = counts[b] || 0;
-          const w = ca > cb ? a : (cb > ca ? b : Math.min(a, b));
+          let w = 0; // 0 = undecided (both feeders blank, no mentions, or capped)
+          if (round <= maxRound && a && b) {
+            const ca = counts[a] || 0, cb = counts[b] || 0;
+            if (ca > 0 || cb > 0) w = ca > cb ? a : (cb > ca ? b : Math.min(a, b));
+          }
           matchups.push({ id, round, a, b, winner: w });
           next.push(w);
           id++;
@@ -507,6 +533,7 @@
       }
       return { matchups, champion: slots[0] };
     }
+    function resolve(counts) { return resolveUpTo(counts, 99); }
 
     function labelOf(game, seed) {
       const t = game.terms.find((t) => t.seed === seed);
@@ -516,15 +543,21 @@
     function matchById(matchups, id) { return matchups.find((m) => m.id === id); }
 
     function slotHtml(game, counts, seed, winner, pickedSeed) {
-      let cls = seed === winner ? 'slot win' : 'slot';
-      if (pickedSeed != null && seed === pickedSeed && seed !== winner) cls += ' mispick';
+      // Undecided slot (its feeder matchup hasn't produced a winner yet).
+      if (!seed) {
+        return `<div class="slot empty"><span class="seed">·</span><span class="label">—</span><span class="count"></span></div>`;
+      }
+      let cls = (winner && seed === winner) ? 'slot win' : 'slot';
+      if (winner && pickedSeed != null && seed === pickedSeed && seed !== winner) cls += ' mispick';
       const c = counts[seed] || 0;
       return `<div class="${cls}" data-seed="${seed}"><span class="seed">${seed}</span><span class="label" title="${labelOf(game, seed)}">${labelOf(game, seed)}</span><span class="count">${c}</span></div>`;
     }
 
     function matchHtml(game, counts, m, picks) {
       let badge = '', cls = 'match', pickedSeed = null;
-      if (picks) {
+      // Only render a player's pick verdict once the matchup has a decided
+      // winner; while it's still undecided we show neither ✓/✗ nor a mispick.
+      if (picks && m.winner) {
         const pick = picks[m.id];
         if (pick != null) {
           pickedSeed = pick;
@@ -542,12 +575,17 @@
       return label + `<div class="col-body">${cells}</div>`;
     }
 
-    function renderBracket(game) {
+    function renderBracket(game, maxRound) {
       const counts = {};
       const res = game.results;
       for (const s of SEED_ORDER) counts[s] = res ? (res.counts[s] || 0) : 0;
-      const matchups = res ? res.matchups : resolve(counts).matchups;
-      const champion = res ? res.champion : resolve(counts).champion;
+      // Always derive the displayed bracket from the counts so inner rounds only
+      // fill in once words are mentioned (and so the reveal animation can cap
+      // advancement via maxRound). Backend results stay authoritative for the
+      // leaderboard/scoring; this only governs what advances on screen.
+      const r = resolveUpTo(counts, maxRound);
+      const matchups = r.matchups;
+      const champion = r.champion;
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
 
       const picks = selectedPicks;
@@ -560,8 +598,8 @@
         <div class="col center">
           <div class="champion">
             <div class="crown">\u{1F3C6}</div>
-            <div class="name">${total > 0 ? labelOf(game, champion) : '—'}</div>
-            <div class="sub">${total > 0 ? 'Champion · ' + (counts[champion] || 0) + ' mentions' : 'awaiting buzzwords'}</div>
+            <div class="name">${champion ? labelOf(game, champion) : '—'}</div>
+            <div class="sub">${champion ? 'Champion · ' + (counts[champion] || 0) + ' mentions' : 'awaiting buzzwords'}</div>
           </div>
           <div class="roundlabel">Final</div>
           ${matchHtml(game, counts, matchById(matchups, 15), picks)}
@@ -643,7 +681,7 @@
       if (res && res.standings && res.standings.length) {
         const lead = res.standings[0].points;
         const hint = selectedName
-          ? `<div class="overlay-hint">Overlaying <b>${selectedName}</b>'s bracket — <span style="color:var(--accent)">✓</span> called it, <span style="color:var(--red)">✗</span> bust. Click again to clear.</div>`
+          ? `<div class="overlay-hint">Overlaying <b>${selectedName}</b>'s bracket: <span style="color:var(--accent)">✓</span> called it, <span style="color:var(--red)">✗</span> bust. Click again to clear.</div>`
           : `<div class="overlay-hint">Click a player to overlay their picks on the bracket.</div>`;
         standings.innerHTML = hint + res.standings.map((s, i) => {
           const rc = s.round_correct || [0, 0, 0, 0];
@@ -710,7 +748,7 @@
           recentMentions = [...inc, ...recentMentions].slice(0, 6);
         }
         // A buzzword a partial provisionally counted got revised away when the
-        // utterance finalized — show a deliberate "correction" rather than a
+        // utterance finalized, so show a deliberate "correction" rather than a
         // silent decrement.
         if (dec.length) {
           correctSeeds = [...new Set(dec)];
@@ -726,12 +764,47 @@
       renderRecent();
     }
 
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const ROUND_REVEAL_MS = 1000; // beat between revealing each round's winners
+    let animating = false;        // a round-by-round reveal is in progress
+
+    // Reveal a freshly-scored bracket one round at a time: show the round-of-16
+    // words first, then advance each round's winners (with a flash) on a beat,
+    // and finish with the champion fanfare. Used for transcript imports, where
+    // the whole result lands at once — pacing it out lets the room follow along.
+    async function animateScored(game) {
+      selectedName = null; selectedPicks = null;
+      prevCounts = null;
+      current = game;
+      renderStatus(game);
+      renderLeaderboard(game);
+      renderRecent();
+
+      const counts = {};
+      for (const s of SEED_ORDER) counts[s] = game.results ? (game.results.counts[s] || 0) : 0;
+      const full = resolve(counts);
+
+      animating = true;
+      // Frame 0: the 16 seeds with their final counts; every inner round empty.
+      flashSeeds = [];
+      renderBracket(game, 0);
+      await sleep(450);
+      // Advance the winners of each round in turn.
+      for (let round = 1; round <= 4 && animating; round++) {
+        flashSeeds = full.matchups.filter((m) => m.round === round && m.winner).map((m) => m.winner);
+        renderBracket(game, round);
+        await sleep(ROUND_REVEAL_MS);
+      }
+      animating = false;
+      if (full.champion) showFanfare();
+    }
+
     let correctionTimer = null;
     function showCorrection(seeds) {
       if (!current) return;
       const names = seeds.map((s) => labelOf(current, s)).join(', ');
       const el = document.getElementById('correction-toast');
-      el.textContent = `✗ correction — ${names} walked back`;
+      el.textContent = `✗ correction: ${names} walked back`;
       el.classList.add('show');
       clearTimeout(correctionTimer);
       correctionTimer = setTimeout(() => el.classList.remove('show'), 2600);
@@ -748,12 +821,12 @@
     }
 
     // Single-bracket model: load the current bracket (or show an empty state
-    // prompting setup via Change Buzzwords).
+    // prompting setup via Modify Buzzwords).
     async function loadCurrent() {
       const games = await invoke('cmd_madness_list');
       if (!games.length) {
         current = null;
-        document.getElementById('status').innerHTML = 'No bracket yet — click <b>Change Buzzwords</b> to set up your 16.';
+        document.getElementById('status').innerHTML = 'No bracket yet. Click <b>Modify Buzzwords</b> to set up your 16.';
         document.getElementById('bracket').innerHTML = '';
         document.getElementById('connectors').innerHTML = '';
         return;
@@ -774,8 +847,10 @@
       return true;
     }
 
-    // ── Change Buzzwords (edit the 16 terms + seeding) ──────────
-    const DEFAULT_TERMS = ['AI | A.I. | artificial intelligence', 'revenue', 'growth', 'accelerate', 'OKRs | OKR', 'scale | scalable', 'circle back', 'double click | double-click', 'follow up | follow-up', 'low-hanging fruit | low hanging fruit', 'move the needle', 'deep dive', 'value-add | value add', 'north star', 'synergy', 'leverage'];
+    // ── Modify Buzzwords (edit the 16 terms + seeding) ──────────
+    // Default 16 buzzwords prefilled into the Modify Buzzwords editor on first
+    // run. Keep in sync with examples/minutes-madness/all-hands-terms.txt.
+    const DEFAULT_TERMS = ['synergy', 'AI-powered | AI powered | A.I.', 'headwinds', 'leverage', 'circle back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star', 'value-add | value add', 'paradigm shift', 'move the needle', 'boil the ocean', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
 
     function termToLine(t) { return [t.label, ...(t.aliases || [])].join(' | '); }
 
@@ -786,7 +861,9 @@
         titleEl.value = current.title || '';
         lines = [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine);
       } else {
-        titleEl.value = (current && current.title) || 'Q1 2026 All-Hands';
+        // Leave the title blank so the placeholder tip shows; if they save
+        // without one, saveBuzzwords falls back to "My Bracket - mm/dd/yy".
+        titleEl.value = (current && current.title) || '';
         lines = DEFAULT_TERMS.slice();
       }
       renderBwRows(lines);
@@ -839,13 +916,17 @@
 
     async function saveBuzzwords() {
       const msg = document.getElementById('bw-msg');
-      const title = document.getElementById('bw-title').value.trim();
+      let title = document.getElementById('bw-title').value.trim();
       const lines = [...document.querySelectorAll('#bw-rows .bw-row input')].map((i) => i.value.trim());
       const filled = lines.filter((l) => l.length > 0);
-      if (!title) { msg.style.color = 'var(--red)'; msg.textContent = 'Give the bracket a title.'; return; }
       if (filled.length !== 16) { msg.style.color = 'var(--red)'; msg.textContent = `Fill all 16 buzzwords (${filled.length}/16).`; return; }
+      if (!title) {
+        // No title given — fall back to "My Bracket - mm/dd/yy".
+        const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+        title = `My Bracket - ${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`;
+      }
       if (current && current.results) {
-        if (!(await confirmDialog('Changing buzzwords starts a fresh round — this clears the current results and players. Continue?'))) return;
+        if (!(await confirmDialog('Changing buzzwords starts a fresh round. This clears the current results and players. Continue?'))) return;
       } else if (current && current.players && current.players.length) {
         if (!(await confirmDialog('Changing buzzwords clears the current players. Continue?'))) return;
       }
@@ -904,14 +985,14 @@
         if (tmPath) game = await invoke('cmd_madness_score', { slug: current.slug, from: tmPath });
         else if (pasteText) game = await invoke('cmd_madness_score_text', { slug: current.slug, text: pasteText });
         else return;
-        prevCounts = null; // reset diff so a one-shot score doesn't spurious-flash
-        render(game);
         if (game.results && game.results.total_mentions > 0) {
           document.getElementById('transcript-modal').classList.remove('show');
-          showFanfare();
+          await animateScored(game); // reveal round by round, then fanfare
         } else {
+          prevCounts = null; // reset diff so a one-shot score doesn't spurious-flash
+          render(game);
           msg.style.color = 'var(--text-secondary)';
-          msg.textContent = 'No buzzwords found in that transcript — double-check it covers the call.';
+          msg.textContent = 'No buzzwords found in that transcript. Double-check it covers the call.';
         }
       } catch (e) {
         msg.style.color = 'var(--red)';
@@ -920,7 +1001,7 @@
     }
 
     async function scoreLive() {
-      if (!current) return;
+      if (!current || animating) return;
       try {
         const game = await invoke('cmd_madness_score', { slug: current.slug, from: null });
         // Skip the heavy re-render (and the flash) when nothing actually changed.
@@ -961,7 +1042,7 @@
         // transcript is untouched.
         await invoke('cmd_start_live_transcript', { cap: 10, partials: true });
       } catch (e) {
-        // A session already running (e.g. from the CLI) is fine — just attach to it.
+        // A session already running (e.g. from the CLI) is fine; just attach to it.
         if (!/active|already/i.test(String(e))) {
           document.getElementById('status').textContent = 'Could not start recording: ' + e;
           return;
@@ -1006,7 +1087,7 @@
       if (recording && status) {
         updateRecordButton(status);
         if (status.active) {
-          // Capturing — but if no utterance lands in the first ~15s, the mic is
+          // Capturing, but if no utterance lands in the first ~15s, the mic is
           // likely muted/blocked or the wrong input is selected.
           if ((status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
           else if (!audioOk && Date.now() - startupAt > 15000) showAudioNudge();
@@ -1079,8 +1160,11 @@
     function showFanfare() {
       if (!current || !current.results) return;
       const res = current.results;
-      const champ = labelOf(current, res.champion);
-      const champMentions = (res.counts && res.counts[res.champion]) || 0;
+      // Celebrate the same champion the bracket shows (counts-derived), falling
+      // back to the backend's champion field if the JS resolve is inconclusive.
+      const champSeed = resolve(res.counts || {}).champion || res.champion;
+      const champ = labelOf(current, champSeed);
+      const champMentions = (res.counts && res.counts[champSeed]) || 0;
       const winner = (res.standings && res.standings.length) ? res.standings[0].name : null;
       const headline = winner
         ? `<span class="who">${winner}</span> wins!`
@@ -1102,7 +1186,7 @@
       requestAnimationFrame(aimSpotlights);
     }
     // Aim each top-corner spotlight beam so its centerline converges on the
-    // champion card — size-independent (recomputed on show + resize).
+    // champion card, size-independent (recomputed on show + resize).
     function aimSpotlights() {
       const card = document.querySelector('.fanfare-card');
       if (!card) return;
@@ -1145,9 +1229,9 @@
       try {
         await invoke('cmd_download_model', { model: 'base' });
         hideModelPrompt();
-        startRecording(); // model is ready — start the session the user wanted
+        startRecording(); // model is ready; start the session the user wanted
       } catch (e) {
-        btn.textContent = 'Download failed — retry';
+        btn.textContent = 'Download failed, retry';
         document.getElementById('model-diag').textContent = String(e);
       } finally {
         btn.classList.remove('busy');

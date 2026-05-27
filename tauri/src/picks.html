@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Minutes Madness — Make Your Picks</title>
+  <title>Minutes Madness: Make Your Picks</title>
   <style>
     /* Self-contained: system fonts so it works on any machine with no install. */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -89,7 +89,7 @@
 </head>
 <body>
   <header>
-    <h1>Minutes <span class="it">Madness</span> — Your Picks</h1>
+    <h1>Minutes <span class="it">Madness</span>: Your Picks</h1>
     <span class="spacer"></span>
     <span id="game-title" class="hint" style="border:none;padding:0"></span>
   </header>
@@ -105,7 +105,7 @@
   </div>
 
   <div id="game">
-    <div class="hint" id="game-hint">Click the team you think wins each matchup. Change earlier picks anytime — later rounds update.</div>
+    <div class="hint" id="game-hint">Click the team you think wins each matchup. Change earlier picks anytime; later rounds update.</div>
     <div id="bracket-wrap">
       <svg id="connectors"></svg>
       <div id="bracket"></div>
@@ -238,7 +238,7 @@
       out.select();
       const msg = document.getElementById('copied-msg');
       navigator.clipboard.writeText(code)
-        .then(() => { msg.textContent = 'Copied — send it to your host!'; })
+        .then(() => { msg.textContent = 'Copied! Send it to your host.'; })
         .catch(() => { msg.textContent = 'Select the code and copy it →'; });
       setTimeout(() => { msg.textContent = ''; }, 5000);
     }

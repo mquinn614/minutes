@@ -1,4 +1,4 @@
-# Minutes Madness — proposed real all-hands bracket (seed = line order).
+# Minutes Madness: proposed real all-hands bracket (seed = line order).
 # Seeds 1-6 are data heavyweights from word_frequency.csv; the rest mix
 # crowd-favorite jargon with the multi-word phrases you wanted. Reorder
 # lines to reseed; swap any term you like. Format: Label | alias | alias

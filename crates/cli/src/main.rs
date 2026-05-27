@@ -992,7 +992,7 @@ enum Commands {
         save_voice: bool,
     },
 
-    /// Minutes Madness — March Madness for corporate buzzwords.
+    /// Minutes Madness: March Madness for corporate buzzwords.
     Madness {
         #[command(subcommand)]
         action: MadnessAction,
@@ -9228,7 +9228,7 @@ fn cmd_madness_watch(game_slug: &str, interval: u64) -> Result<()> {
 
     game.score(&transcript);
     madness::save_game(&game)?;
-    println!("\nSession ended — final bracket:\n");
+    println!("\nSession ended. Final bracket:\n");
     print_madness_results(&game);
     Ok(())
 }
@@ -9251,7 +9251,7 @@ fn render_madness_live(
     print!("\x1b[2J\x1b[H");
     let state = if status.active { "LIVE" } else { "ENDED" };
     println!(
-        "Minutes Madness — \"{}\"  [{}]   {:.0}s, {} utterances, {} mentions",
+        "Minutes Madness: \"{}\"  [{}]   {:.0}s, {} utterances, {} mentions",
         game.title, state, status.duration_secs, status.line_count, total
     );
     println!();
@@ -9327,7 +9327,7 @@ fn prompt_madness_picks(
     let mut picks = std::collections::BTreeMap::new();
     let stdin = std::io::stdin();
     println!(
-        "Fill out the bracket for \"{}\" — enter the winning seed for each matchup.",
+        "Fill out the bracket for \"{}\". Enter the winning seed for each matchup.",
         game.title
     );
     for m in 1..=madness::MATCHUP_COUNT {
@@ -9456,7 +9456,7 @@ fn print_madness_results(game: &minutes_core::madness::BracketGame) {
     println!();
 
     if results.standings.is_empty() {
-        println!("No players entered — pure buzzword science this round.");
+        println!("No players entered. Pure buzzword science this round.");
     } else {
         println!("Standings:");
         for (rank, ps) in results.standings.iter().enumerate() {

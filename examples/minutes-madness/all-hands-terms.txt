@@ -1,4 +1,4 @@
-# Minutes Madness — sample 16 buzzword seeds (seed = line order).
+# Minutes Madness: sample 16 buzzword seeds (seed = line order).
 # Format: Label | alias | alias
 synergy
 AI-powered | AI powered | A.I.
@@ -14,5 +14,5 @@ paradigm shift
 move the needle
 boil the ocean
 table stakes
-open the kimono
-drink our own champagne
+RTO | return to the office | return to office
+pivot | pivoting | pivoted

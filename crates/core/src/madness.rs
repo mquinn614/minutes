@@ -1,4 +1,4 @@
-//! Minutes Madness — March Madness for corporate buzzwords.
+//! Minutes Madness: March Madness for corporate buzzwords.
 //!
 //! Seed 16 buzzwords into a single-elimination bracket before an all-hands
 //! call. As the call is transcribed (live via `minutes live` or from a saved
@@ -7,7 +7,7 @@
 //! Players fill out a full bracket beforehand and earn round-weighted points
 //! for each correctly predicted matchup winner.
 //!
-//! This module is pure logic + JSON persistence — no audio dependencies — so
+//! This module is pure logic + JSON persistence (no audio dependencies), so
 //! it can be developed and tested against sample transcripts without a live
 //! call. The CLI (`minutes madness`) is a thin shell over these functions.
 
@@ -500,7 +500,7 @@ pub fn list_games() -> Result<Vec<String>, MadnessError> {
 
 /// Extract transcript text from a file. Recognizes:
 /// - `.jsonl`: live transcript lines, joining each line's `text` field;
-/// - `.md`: a meeting note — text after a `## Transcript` heading, or the
+/// - `.md`: a meeting note, text after a `## Transcript` heading, or the
 ///   whole body minus YAML frontmatter if no such heading;
 /// - anything else: the raw file contents.
 pub fn transcript_text_from_file(path: &Path) -> Result<String, MadnessError> {
