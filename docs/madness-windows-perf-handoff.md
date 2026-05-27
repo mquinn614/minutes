@@ -36,6 +36,26 @@ do that in real time, so it backs up and drops audio. Current Windows config
 extremely laggy** — so this CPU is slower than the ~0.43x-realtime estimate from
 batch logs, likely due to per-whisper-call overhead on short partial buffers.
 
+## DISTRIBUTION TARGET (read this — it shapes the whole fix)
+This will spread to MULTIPLE non-technical hosts on VARIED, often weak hardware
+(work laptops, integrated GPUs), each running their own events. They get ONE
+installer; they will not install CUDA toolkits or tune configs. Implications:
+- The shipped baseline must run on essentially ANY Windows x64 → that means
+  **CPU**, and it must stay acceptable on a *mid/low* machine, not just a fast one.
+- **GPU is opportunistic, not the deliverable.** For breadth prefer **Vulkan**
+  (uses a GPU when present, falls back to CPU, works NVIDIA/AMD/Intel) over CUDA
+  (NVIDIA-only, heavy runtime dep, won't launch without it). A CUDA build is only
+  for a *known* dedicated NVIDIA host.
+- **Best multi-host answer = runtime auto-adaptation:** at session start,
+  micro-benchmark whisper on a short clip to get the machine's real-time factor
+  (or detect an active GPU backend), then auto-pick model + partial interval +
+  cap. Fast machines get snappy; weak ones get conservative-but-working, with no
+  user config. This is the robust target — design toward it.
+- So: prove a solid CPU baseline FIRST (works on a weak machine). Treat GPU
+  (Vulkan) as a possible single broad artifact only if it falls back cleanly and
+  is stable across drivers. The on-PC GPU check is a data point (ceiling + is
+  Vulkan-as-baseline viable?), not the goal.
+
 ## DO THIS FIRST: measure, don't guess
 The fix depends on the true per-utterance whisper speed on THIS CPU. Measure it
 before changing anything:
@@ -50,27 +70,32 @@ before changing anything:
 3. Watch a live Madness recording's `~/.minutes/events.jsonl` `live.utterance.final`
    `offset_ms` vs wall-clock to see the backlog grow in real time.
 
-## TOP OPTION TO EVALUATE FIRST: GPU-accelerate whisper on this PC
+## PRIMARY GOAL: a CPU baseline that works on a typical/weak host
+This must work for everyone (see Distribution target). Decide from the measured
+real-time factor on this PC (and remember other hosts may be slower):
+- If base is mildly over real time: partials OFF + short cap (cap:3) → one
+  transcription per utterance, ~3-4s latency, no backlog. Panel-only, universal.
+- If base still can't keep up finalize-only: live model `tiny` on CPU
+  (`config.live_transcript.model`). Earlier validation: tiny 12/16 vs base 14/16
+  and garbled multi-word terms — mitigate with wider aliases, or accept for speed.
+- Strongly consider RUNTIME AUTO-ADAPT (the multi-host win): micro-benchmark at
+  session start, pick model/interval/cap from the measured RTF so every host
+  self-tunes. Worth the effort given this spreads to varied machines.
+
+## GPU as an OPPORTUNISTIC enhancement (data point on this PC; not the baseline)
 The cuda/vulkan feature flags are ALREADY wired (`crates/core/Cargo.toml`:
-`cuda = ["whisper-rs/cuda"]`, `vulkan = ["whisper-rs/vulkan"]`, plus cli + tauri).
-The shipped Windows CI build is CPU-only purely for distribution compatibility
-(`cargo tauri build --features parakeet`, no GPU). If THIS host PC has a capable
-GPU, a GPU build gives full base-model accuracy at GPU speed — likely solving the
-lag outright with zero accuracy tradeoff. Do this before tiny/finalize-only.
-
-1. Detect the GPU: `nvidia-smi` (NVIDIA) or `wmic path win32_VideoController get name`.
-2. NVIDIA → build with `--features parakeet,cuda` (needs CUDA Toolkit / nvcc at
-   build time + CUDA runtime at run time). AMD/Intel/NVIDIA → `--features
-   parakeet,vulkan` (needs Vulkan SDK at build + a Vulkan driver). More portable.
-3. Build locally (`cargo tauri build ... --features parakeet,cuda` or via the
-   CI workflow if you add the feature there for a one-off), run Madness live,
-   confirm whisper now keeps up in real time. Then the existing snappy config
-   (partials 1.5s, cap 10) should work like it does on the Mac.
-4. DISTRIBUTION CAVEAT: a GPU build is machine-specific (CUDA needs NVIDIA+drivers
-   on the target). For the All-Hands the HOST runs it → build for the host. Keep
-   the CPU build as the universal fallback for colleagues without a usable GPU.
-
-## CPU-only fixes, in order of preference (if no usable GPU; decide from measurements)
+`cuda`/`vulkan`/`metal` → `whisper-rs/*`, plus cli + tauri). The shipped Windows
+CI build is CPU-only by choice (`--features parakeet`).
+1. Detect the GPU: `nvidia-smi` or `wmic path win32_VideoController get name`.
+2. Test build with `--features parakeet,vulkan` (broad; needs Vulkan SDK at build,
+   a Vulkan driver at run; SHOULD fall back to CPU if no device — verify that).
+   `--features parakeet,cuda` only for a known NVIDIA host (CUDA Toolkit + runtime).
+3. Goal of the test: (a) does GPU make base real-time here? (ceiling check), and
+   (b) is a Vulkan build a viable SINGLE broad artifact (fast w/ GPU, clean CPU
+   fallback, stable across drivers)? If yes, it could ship to all hosts; if the
+   fallback/driver story is shaky, ship CPU-adaptive and reserve GPU builds for
+   power hosts.
+4. A CUDA build is NOT a multi-host deliverable (won't launch without NVIDIA).
 - If base is only mildly over real-time: drop partials entirely on Windows
   (`partials:false`) + short cap (`cap:3`) → one transcription per utterance,
   ~3–4s latency, no backlog. Rock-solid. Panel-only.
