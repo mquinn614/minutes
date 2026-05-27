@@ -57,18 +57,25 @@ installer; they will not install CUDA toolkits or tune configs. Implications:
   Vulkan-as-baseline viable?), not the goal.
 
 ## DO THIS FIRST: measure, don't guess
-The fix depends on the true per-utterance whisper speed on THIS CPU. Measure it
-before changing anything:
+A ready-made benchmark exists — `crates/core/examples/whisper_rtf.rs`. It times
+per-buffer transcription (incl. per-call overhead on short partial buffers) for
+each installed model and PROJECTS whether each candidate live config keeps up.
+Run it on this PC (needs the Rust toolchain — see build section):
 
-1. Generate a buzzword clip and time transcription at different models/buffer
-   sizes. Reuse the validation recipe: produce a 16kHz mono WAV (the 16
-   buzzwords from `examples/minutes-madness/all-hands-terms.txt`), then time
-   `minutes process` (or a direct whisper call) with `transcription.model` set
-   to `base` vs `tiny`. Record wall-time vs audio-duration → real-time factor.
-2. Specifically measure SHORT buffers (1–3s, like partials) vs one long buffer,
-   to quantify per-call overhead. That overhead is the suspected culprit.
-3. Watch a live Madness recording's `~/.minutes/events.jsonl` `live.utterance.final`
-   `offset_ms` vs wall-clock to see the backlog grow in real time.
+```
+cargo run --release --example whisper_rtf --features whisper           # CPU baseline
+cargo run --release --example whisper_rtf --features whisper,vulkan     # GPU (broad)
+cargo run --release --example whisper_rtf --features whisper,cuda       # GPU (NVIDIA)
+```
+Optionally pass a 16kHz mono WAV; defaults to the bundled `crates/assets/demo.wav`.
+Run it 2-3x (per-run noise) and read the "projected live load" table — a config
+< ~0.85 keeps up, >= 1.0 falls behind. On the Mac (M-series CPU) even `small`
+projected < 1.0; the user's PC fails at 1.5s/10s, so expect much higher numbers
+there — the table tells you exactly which model + interval + cap crosses back
+under 1.0. That picks the CPU baseline; the GPU runs show the ceiling.
+
+Also cross-check live: watch `~/.minutes/events.jsonl` `live.utterance.final`
+`offset_ms` vs wall-clock during a real Madness recording to see backlog grow.
 
 ## PRIMARY GOAL: a CPU baseline that works on a typical/weak host
 This must work for everyone (see Distribution target). Decide from the measured

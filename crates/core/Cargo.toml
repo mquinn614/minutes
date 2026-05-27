@@ -81,3 +81,10 @@ insta = { version = "1", features = ["json"] }
 [[test]]
 name = "integration"
 path = "../../tests/integration/pipeline_test.rs"
+
+# Dev-only whisper real-time-factor benchmark for live-scoring tuning.
+# Not part of the shipped library. Run with --features whisper (+ a GPU
+# backend to measure the GPU ceiling). See examples/whisper_rtf.rs.
+[[example]]
+name = "whisper_rtf"
+required-features = ["whisper"]
