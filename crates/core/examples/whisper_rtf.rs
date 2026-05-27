@@ -16,6 +16,7 @@
 //!
 //! Reads models from ~/.minutes/models/ggml-{tiny,base,small}.bin (whichever exist).
 
+use minutes_core::live_autotune::{verdict, CostModel, LiveCandidate, RtfPoint, Verdict};
 use std::time::Instant;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -56,8 +57,16 @@ fn load_wav_16k_mono(path: &std::path::Path) -> Vec<f32> {
     let mut reader = hound::WavReader::open(path)
         .unwrap_or_else(|e| panic!("open wav {}: {}", path.display(), e));
     let spec = reader.spec();
-    assert_eq!(spec.sample_rate, 16000, "need a 16kHz wav (got {})", spec.sample_rate);
-    assert_eq!(spec.channels, 1, "need a mono wav (got {} ch)", spec.channels);
+    assert_eq!(
+        spec.sample_rate, 16000,
+        "need a 16kHz wav (got {})",
+        spec.sample_rate
+    );
+    assert_eq!(
+        spec.channels, 1,
+        "need a mono wav (got {} ch)",
+        spec.channels
+    );
     reader
         .samples::<i16>()
         .map(|s| s.expect("read sample") as f32 / 32768.0)
@@ -103,7 +112,11 @@ fn main() {
         .unwrap_or(4);
 
     println!("whisper RTF benchmark");
-    println!("  backend (compiled): {}   use_gpu={}", backend(), gpu_compiled());
+    println!(
+        "  backend (compiled): {}   use_gpu={}",
+        backend(),
+        gpu_compiled()
+    );
     println!("  threads: {}", threads);
     println!("  wav: {}", wav_path.display());
 
@@ -146,7 +159,7 @@ fn main() {
         let warm = ((16000.0 * lengths[0]) as usize).min(samples.len());
         let _ = transcribe_time(&ctx, &samples[..warm], threads);
 
-        let mut pts: Vec<(f64, f64)> = Vec::new(); // (audio_secs, elapsed_secs)
+        let mut pts: Vec<RtfPoint> = Vec::new();
         let mut sanity = String::new();
         for &l in &lengths {
             let n = ((16000.0 * l) as usize).min(samples.len());
@@ -157,53 +170,54 @@ fn main() {
                 l,
                 elapsed * 1000.0,
                 rtf,
-                if rtf > 1.0 { "  << slower than real time" } else { "" }
+                if rtf > 1.0 {
+                    "  << slower than real time"
+                } else {
+                    ""
+                }
             );
-            pts.push((l, elapsed));
+            pts.push(RtfPoint::new(l, elapsed));
             sanity = text;
         }
 
-        // Linear fit: elapsed ~= overhead + slope * buffer_secs (from first/last point).
-        let (l0, t0) = pts[0];
-        let (l1, t1) = *pts.last().unwrap();
-        let slope = (t1 - t0) / (l1 - l0).max(0.001);
-        let overhead = (t0 - slope * l0).max(0.0);
+        // Shared cost model + projection (see crate::live_autotune): the runtime
+        // auto-tuner uses the exact same math so this table predicts what it picks.
+        let cost = CostModel::fit(&pts).expect("need >=2 timing points");
         println!(
             "  fit: per-call overhead ~{:.0} ms, marginal ~{:.2}x real time",
-            overhead * 1000.0,
-            slope
+            cost.overhead_secs * 1000.0,
+            cost.marginal_rtf
         );
-        let predict = |l: f64| overhead + slope * l;
 
         // Project sustained live load for candidate configs. work/realtime must
         // stay below ~1.0 (with margin) or whisper backs up and drops audio.
-        let configs: &[(Option<f64>, f64, &str)] = &[
-            (Some(1.5), 10.0, "partials 1.5s + 10s cap (original, failed)"),
-            (Some(2.5), 5.0, "partials 2.5s + 5s cap (current Windows)"),
-            (Some(3.0), 6.0, "partials 3.0s + 6s cap"),
-            (None, 3.0, "no partials + 3s cap"),
-            (None, 5.0, "no partials + 5s cap"),
+        let configs: &[(LiveCandidate, &str)] = &[
+            (
+                LiveCandidate::partials(1.5, 10.0),
+                "partials 1.5s + 10s cap (original, failed)",
+            ),
+            (
+                LiveCandidate::partials(2.5, 5.0),
+                "partials 2.5s + 5s cap (old Windows)",
+            ),
+            (LiveCandidate::partials(3.0, 6.0), "partials 3.0s + 6s cap"),
+            (
+                LiveCandidate::partials_off(3.0),
+                "no partials + 3s cap (current Windows)",
+            ),
+            (LiveCandidate::partials_off(5.0), "no partials + 5s cap"),
         ];
-        println!("  projected live load (work/realtime; <0.85 OK, <1.0 tight, >=1.0 falls behind):");
-        for (interval, cap, label) in configs {
-            let mut work = 0.0;
-            if let Some(iv) = interval {
-                let mut t = *iv;
-                while t < cap - 0.001 {
-                    work += predict(t);
-                    t += iv;
-                }
-            }
-            work += predict(*cap); // finalization pass
-            let ratio = work / cap;
-            let verdict = if ratio < 0.85 {
-                "OK"
-            } else if ratio < 1.0 {
-                "TIGHT"
-            } else {
-                "FALLS BEHIND"
+        println!(
+            "  projected live load (work/realtime; <0.85 OK, <1.0 tight, >=1.0 falls behind):"
+        );
+        for (cand, label) in configs {
+            let ratio = cand.projected_load(&cost);
+            let verdict_str = match verdict(ratio) {
+                Verdict::Ok => "OK",
+                Verdict::Tight => "TIGHT",
+                Verdict::FallsBehind => "FALLS BEHIND",
             };
-            println!("    {:<40} {:.2}  {}", label, ratio, verdict);
+            println!("    {:<40} {:.2}  {}", label, ratio, verdict_str);
         }
         let preview: String = sanity.chars().take(110).collect();
         println!("  sanity transcript: {}\n", preview);

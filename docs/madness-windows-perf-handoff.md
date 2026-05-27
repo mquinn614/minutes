@@ -96,6 +96,21 @@ real-time factor on this PC (and remember other hosts may be slower):
 - Strongly consider RUNTIME AUTO-ADAPT (the multi-host win): micro-benchmark at
   session start, pick model/interval/cap from the measured RTF so every host
   self-tunes. Worth the effort given this spreads to varied machines.
+  - **Landed (pure math, no runtime wiring yet):** `crates/core/src/live_autotune.rs`
+    — `CostModel::fit(points)`, `LiveCandidate::projected_load(cost)`, `verdict`,
+    and `choose(cost, ladder)` (snappiest config that projects `<0.85`, else
+    lowest-load fallback with its non-Ok verdict). 11 unit tests; `whisper_rtf.rs`
+    now uses it so the benchmark table and the future auto-tuner share one source
+    of truth. Verifiable off-target: `cargo test -p minutes-core
+    --no-default-features live_autotune`.
+  - **Deferred until the PC produces one `whisper_rtf` run** (don't wire blind —
+    that run confirms projection tracks reality on the target; the doc already
+    notes this PC ran slower than the batch estimate): a `cmd_probe_live_config`
+    Tauri command that loads the live model, times ~5 buffers on the embedded
+    demo clip, calls `live_autotune`, and returns the chosen knobs; panel calls it
+    once before `startRecording` and caches the result per (model, backend) in
+    `~/.minutes/madness/`; plus an additive optional `model` param on
+    `cmd_start_live_transcript` so the picker can escalate `base → tiny`.
 
 ## GPU as an OPPORTUNISTIC enhancement (data point on this PC; not the baseline)
 The cuda/vulkan feature flags are ALREADY wired (`crates/core/Cargo.toml`:
