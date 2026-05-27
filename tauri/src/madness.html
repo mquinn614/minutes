@@ -706,6 +706,27 @@
             removePlayer(row.dataset.player);
           });
         });
+      } else if (game.players && game.players.length) {
+        // Players entered but the bracket isn't scored yet (e.g. picks imported
+        // before the meeting). Show who's in + their predicted champion so the
+        // host gets confirmation; points and ranks appear once it's scored.
+        standings.innerHTML =
+          '<div class="overlay-hint">Picks are in. Score the bracket (record or Transcript Mode) to rank players.</div>' +
+          game.players.map((p) => {
+            const champ = (p.picks && p.picks[15]) ? labelOf(game, p.picks[15]) : '—';
+            const sel = p.name === selectedName ? ' sel' : '';
+            return `<div class="standing-row${sel}" data-player="${p.name}">
+            <div class="standing"><span class="rank">·</span><span class="pname">${p.name}</span><span class="pts">picks in</span><span class="corr">awaiting results</span><span class="remove" title="Remove ${p.name}">✕</span></div>
+            <div class="breakdown">predicted 🏆 ${champ}</div>
+          </div>`;
+          }).join('');
+        standings.querySelectorAll('.standing-row').forEach((row) => {
+          row.addEventListener('click', () => selectPlayer(row.dataset.player));
+          row.querySelector('.remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            removePlayer(row.dataset.player);
+          });
+        });
       } else {
         standings.innerHTML = '<div class="empty">No players entered. Add picks with <code>minutes madness pick</code>.</div>';
       }
@@ -854,7 +875,7 @@
     // ── Modify Buzzwords (edit the 16 terms + seeding) ──────────
     // Default 16 buzzwords prefilled into the Modify Buzzwords editor on first
     // run. Keep in sync with examples/minutes-madness/all-hands-terms.txt.
-    const DEFAULT_TERMS = ['synergy', 'AI-powered | AI powered | A.I.', 'headwinds', 'leverage', 'circle back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star', 'value-add | value add', 'paradigm shift', 'move the needle', 'boil the ocean', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
+    const DEFAULT_TERMS = ['synergy | synergistic', 'AI-powered | AI powered | A.I. | AI | Artificial Intelligence', 'headwinds', 'leverage | leveraging', 'circle back | circle-back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star | northstar', 'value-add | value add', 'paradigm shift | paradigm-shift', 'move the needle', 'boil the ocean', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
 
     function termToLine(t) { return [t.label, ...(t.aliases || [])].join(' | '); }
 

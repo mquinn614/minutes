@@ -1,16 +1,16 @@
 # Minutes Madness: sample 16 buzzword seeds (seed = line order).
 # Format: Label | alias | alias
-synergy
-AI-powered | AI powered | A.I.
+synergy | synergistic
+AI-powered | AI powered | A.I. | AI | Artificial Intelligence
 headwinds
-leverage
-circle back
+leverage | leveraging
+circle back | circle-back
 low-hanging fruit | low hanging fruit
 double-click | double click
 bandwidth
-north star
+north star | northstar
 value-add | value add
-paradigm shift
+paradigm shift | paradigm-shift
 move the needle
 boil the ocean
 table stakes
