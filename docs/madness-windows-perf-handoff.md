@@ -50,7 +50,27 @@ before changing anything:
 3. Watch a live Madness recording's `~/.minutes/events.jsonl` `live.utterance.final`
    `offset_ms` vs wall-clock to see the backlog grow in real time.
 
-## Likely fixes, in order of preference (decide from the measurements)
+## TOP OPTION TO EVALUATE FIRST: GPU-accelerate whisper on this PC
+The cuda/vulkan feature flags are ALREADY wired (`crates/core/Cargo.toml`:
+`cuda = ["whisper-rs/cuda"]`, `vulkan = ["whisper-rs/vulkan"]`, plus cli + tauri).
+The shipped Windows CI build is CPU-only purely for distribution compatibility
+(`cargo tauri build --features parakeet`, no GPU). If THIS host PC has a capable
+GPU, a GPU build gives full base-model accuracy at GPU speed — likely solving the
+lag outright with zero accuracy tradeoff. Do this before tiny/finalize-only.
+
+1. Detect the GPU: `nvidia-smi` (NVIDIA) or `wmic path win32_VideoController get name`.
+2. NVIDIA → build with `--features parakeet,cuda` (needs CUDA Toolkit / nvcc at
+   build time + CUDA runtime at run time). AMD/Intel/NVIDIA → `--features
+   parakeet,vulkan` (needs Vulkan SDK at build + a Vulkan driver). More portable.
+3. Build locally (`cargo tauri build ... --features parakeet,cuda` or via the
+   CI workflow if you add the feature there for a one-off), run Madness live,
+   confirm whisper now keeps up in real time. Then the existing snappy config
+   (partials 1.5s, cap 10) should work like it does on the Mac.
+4. DISTRIBUTION CAVEAT: a GPU build is machine-specific (CUDA needs NVIDIA+drivers
+   on the target). For the All-Hands the HOST runs it → build for the host. Keep
+   the CPU build as the universal fallback for colleagues without a usable GPU.
+
+## CPU-only fixes, in order of preference (if no usable GPU; decide from measurements)
 - If base is only mildly over real-time: drop partials entirely on Windows
   (`partials:false`) + short cap (`cap:3`) → one transcription per utterance,
   ~3–4s latency, no backlog. Rock-solid. Panel-only.
