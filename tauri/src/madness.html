@@ -123,6 +123,17 @@
     }
     .modal hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     .modal .tm-pick { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
+    .modal.wide { max-width: 560px; }
+    #bw-title { width: 100%; }
+    #bw-rows { max-height: 50vh; overflow-y: auto; margin: 6px 0 10px; }
+    .bw-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .bw-row.dragging { opacity: 0.4; }
+    .bw-row.dragover { box-shadow: inset 0 2px 0 var(--accent); }
+    .bw-row .bw-seed { font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); width: 22px; text-align: right; flex-shrink: 0; }
+    .bw-row .bw-grip { cursor: grab; color: var(--text-tertiary); font-size: 13px; user-select: none; padding: 0 2px; }
+    .bw-row input { flex: 1; background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-mid); border-radius: 6px; padding: 5px 8px; font-family: 'Geist Mono', monospace; font-size: 11px; }
+    .bw-row .bw-x { cursor: pointer; color: var(--text-tertiary); font-size: 12px; padding: 0 4px; flex-shrink: 0; }
+    .bw-row .bw-x:hover { color: var(--red); }
 
     .status {
       font-family: 'Geist Mono', monospace;
@@ -292,7 +303,7 @@
   <header>
     <h1>Minutes <span style="font-style:italic">Madness</span></h1>
     <span class="spacer"></span>
-    <select id="bracket-select" title="Choose a bracket"></select>
+    <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Change Buzzwords</button>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
     <button id="transcript-btn" title="Score against a transcript file or pasted text — no recording needed">Transcript Mode</button>
     <button id="players-btn" title="Invite players and import their picks">Players</button>
@@ -366,6 +377,20 @@
         <button class="primary" id="tm-score-btn" disabled>Score bracket</button>
         <div class="diag" id="tm-msg"></div>
         <a id="tm-close">Close</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="buzzwords-modal">
+    <div class="modal wide">
+      <h3>Change Buzzwords</h3>
+      <input type="text" id="bw-title" placeholder="Bracket title (e.g. Q1 2026 All-Hands)" />
+      <p class="diag">Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add spelling variants with <code>|</code> — e.g. <code>AI | A.I. | artificial intelligence</code>.</p>
+      <div id="bw-rows"></div>
+      <div class="diag" id="bw-msg"></div>
+      <div class="actions" style="flex-direction:row; gap:10px; justify-content:flex-end; align-items:center;">
+        <a id="bw-cancel">Cancel</a>
+        <button class="primary" id="bw-save">Save buzzwords</button>
       </div>
     </div>
   </div>
@@ -722,21 +747,23 @@
       bar.innerHTML = `<span class="rlabel">Recently mentioned</span>${chips}`;
     }
 
-    async function loadList() {
+    // Single-bracket model: load the current bracket (or show an empty state
+    // prompting setup via Change Buzzwords).
+    async function loadCurrent() {
       const games = await invoke('cmd_madness_list');
-      const sel = document.getElementById('bracket-select');
       if (!games.length) {
-        sel.innerHTML = '<option>(no brackets)</option>';
+        current = null;
+        document.getElementById('status').innerHTML = 'No bracket yet — click <b>Change Buzzwords</b> to set up your 16.';
+        document.getElementById('bracket').innerHTML = '';
+        document.getElementById('connectors').innerHTML = '';
         return;
       }
-      sel.innerHTML = games.map((g) => `<option value="${g.slug}">${g.title}</option>`).join('');
-      await loadBracket(sel.value);
+      await loadBracketBySlug(games[0].slug);
     }
 
-    async function loadBracket(slug) {
-      if (!slug || slug === '(no brackets)') return;
-      if (current && current.slug !== slug) { selectedName = null; selectedPicks = null; }
-      prevCounts = null; recentMentions = []; flashSeeds = [];
+    async function loadBracketBySlug(slug) {
+      selectedName = null; selectedPicks = null;
+      prevCounts = null; recentMentions = []; flashSeeds = []; correctSeeds = [];
       const game = await invoke('cmd_madness_show', { slug });
       render(game);
     }
@@ -745,6 +772,89 @@
       if (!a || !b) return false;
       for (const s of SEED_ORDER) if ((a[s] || 0) !== (b[s] || 0)) return false;
       return true;
+    }
+
+    // ── Change Buzzwords (edit the 16 terms + seeding) ──────────
+    const DEFAULT_TERMS = ['AI | A.I. | artificial intelligence', 'revenue', 'growth', 'accelerate', 'OKRs | OKR', 'scale | scalable', 'circle back', 'double click | double-click', 'follow up | follow-up', 'low-hanging fruit | low hanging fruit', 'move the needle', 'deep dive', 'value-add | value add', 'north star', 'synergy', 'leverage'];
+
+    function termToLine(t) { return [t.label, ...(t.aliases || [])].join(' | '); }
+
+    function openBuzzwordsModal() {
+      const titleEl = document.getElementById('bw-title');
+      let lines;
+      if (current && current.terms && current.terms.length === 16) {
+        titleEl.value = current.title || '';
+        lines = [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine);
+      } else {
+        titleEl.value = (current && current.title) || 'Q1 2026 All-Hands';
+        lines = DEFAULT_TERMS.slice();
+      }
+      renderBwRows(lines);
+      document.getElementById('bw-msg').textContent = '';
+      document.getElementById('buzzwords-modal').classList.add('show');
+    }
+
+    function renderBwRows(lines) {
+      const wrap = document.getElementById('bw-rows');
+      wrap.innerHTML = lines.map((line, i) => `
+        <div class="bw-row" draggable="true" data-i="${i}">
+          <span class="bw-grip" title="Drag to reseed">⠿</span>
+          <span class="bw-seed">${i + 1}.</span>
+          <input type="text" value="${String(line).replace(/"/g, '&quot;')}" placeholder="buzzword" />
+          <span class="bw-x" title="Clear this slot">✕</span>
+        </div>`).join('');
+      let dragEl = null;
+      wrap.querySelectorAll('.bw-row').forEach((row) => {
+        row.addEventListener('dragstart', () => { dragEl = row; row.classList.add('dragging'); });
+        row.addEventListener('dragend', () => {
+          row.classList.remove('dragging');
+          wrap.querySelectorAll('.bw-row').forEach((r) => r.classList.remove('dragover'));
+          renumberBwRows();
+        });
+        row.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          if (!dragEl || dragEl === row) return;
+          const r = row.getBoundingClientRect();
+          const after = (e.clientY - r.top) > r.height / 2;
+          wrap.querySelectorAll('.bw-row').forEach((x) => x.classList.remove('dragover'));
+          row.classList.add('dragover');
+          wrap.insertBefore(dragEl, after ? row.nextSibling : row);
+        });
+        row.querySelector('.bw-x').addEventListener('click', () => {
+          const input = row.querySelector('input'); input.value = ''; input.focus();
+        });
+      });
+    }
+    function renumberBwRows() {
+      [...document.querySelectorAll('#bw-rows .bw-row')].forEach((row, i) => {
+        row.dataset.i = i; row.querySelector('.bw-seed').textContent = (i + 1) + '.';
+      });
+    }
+
+    async function confirmDialog(message) {
+      const dlg = window.__TAURI__ && window.__TAURI__.dialog;
+      if (dlg && dlg.ask) { try { return await dlg.ask(message, { title: 'Minutes Madness', kind: 'warning' }); } catch (e) { /* fall through */ } }
+      return window.confirm(message);
+    }
+
+    async function saveBuzzwords() {
+      const msg = document.getElementById('bw-msg');
+      const title = document.getElementById('bw-title').value.trim();
+      const lines = [...document.querySelectorAll('#bw-rows .bw-row input')].map((i) => i.value.trim());
+      const filled = lines.filter((l) => l.length > 0);
+      if (!title) { msg.style.color = 'var(--red)'; msg.textContent = 'Give the bracket a title.'; return; }
+      if (filled.length !== 16) { msg.style.color = 'var(--red)'; msg.textContent = `Fill all 16 buzzwords (${filled.length}/16).`; return; }
+      if (current && current.results) {
+        if (!(await confirmDialog('Changing buzzwords starts a fresh round — this clears the current results and players. Continue?'))) return;
+      } else if (current && current.players && current.players.length) {
+        if (!(await confirmDialog('Changing buzzwords clears the current players. Continue?'))) return;
+      }
+      try {
+        const game = await invoke('cmd_madness_set_terms', { slug: current ? current.slug : null, title, lines: filled });
+        document.getElementById('buzzwords-modal').classList.remove('show');
+        selectedName = null; selectedPicks = null; prevCounts = null; recentMentions = []; flashSeeds = []; correctSeeds = [];
+        render(game);
+      } catch (e) { msg.style.color = 'var(--red)'; msg.textContent = String(e).replace(/^Error:\s*/, ''); }
     }
 
     // ── Transcript Mode (score a saved transcript, no recording) ──
@@ -1097,7 +1207,9 @@
     });
     document.getElementById('import-picks-btn').addEventListener('click', importPicks);
 
-    document.getElementById('bracket-select').addEventListener('change', (e) => loadBracket(e.target.value));
+    document.getElementById('buzzwords-btn').addEventListener('click', openBuzzwordsModal);
+    document.getElementById('bw-cancel').addEventListener('click', () => document.getElementById('buzzwords-modal').classList.remove('show'));
+    document.getElementById('bw-save').addEventListener('click', saveBuzzwords);
     document.getElementById('transcript-btn').addEventListener('click', openTranscriptModal);
     document.getElementById('tm-file-btn').addEventListener('click', tmChooseFile);
     document.getElementById('tm-paste-btn').addEventListener('click', tmTogglePaste);
@@ -1132,7 +1244,7 @@
       } catch (e) { /* ignore */ }
     }
 
-    loadList()
+    loadCurrent()
       .then(syncRecordingState)
       .catch((e) => { document.getElementById('status').textContent = 'Error: ' + e; });
   </script>

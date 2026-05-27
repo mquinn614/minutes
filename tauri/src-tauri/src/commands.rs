@@ -13486,6 +13486,44 @@ pub fn cmd_madness_score(
     Ok(game)
 }
 
+/// Set the bracket's 16 buzzwords (and title) from the panel's "Change
+/// Buzzwords" editor. Each line is `Label | alias | alias`; row order is the
+/// seed order. Changing terms starts a fresh round — results and players are
+/// cleared (the old picks/scores referenced the old terms). Creates the
+/// bracket if `slug` is absent or unknown, so first-time setup needs no CLI.
+#[tauri::command]
+pub fn cmd_madness_set_terms(
+    slug: Option<String>,
+    title: String,
+    lines: Vec<String>,
+) -> Result<minutes_core::madness::BracketGame, String> {
+    use minutes_core::madness;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("give the bracket a title".into());
+    }
+    let terms = madness::parse_terms_file(&lines.join("\n")).map_err(|e| e.to_string())?;
+    if terms.len() != madness::BRACKET_SIZE {
+        return Err(format!(
+            "need exactly {} buzzwords, got {}",
+            madness::BRACKET_SIZE,
+            terms.len()
+        ));
+    }
+    let game = match slug.and_then(|s| madness::load_game(&s).ok()) {
+        Some(mut g) => {
+            g.title = title.to_string();
+            g.terms = terms;
+            g.players.clear();
+            g.results = None;
+            g
+        }
+        None => madness::BracketGame::new(title, None, terms).map_err(|e| e.to_string())?,
+    };
+    madness::save_game(&game).map_err(|e| e.to_string())?;
+    Ok(game)
+}
+
 /// Score a bracket against raw transcript text (Transcript Mode's paste box).
 #[tauri::command]
 pub fn cmd_madness_score_text(

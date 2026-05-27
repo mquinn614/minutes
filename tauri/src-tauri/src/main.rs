@@ -2347,6 +2347,7 @@ fn main() {
             commands::cmd_madness_show,
             commands::cmd_madness_score,
             commands::cmd_madness_score_text,
+            commands::cmd_madness_set_terms,
             commands::cmd_madness_add_player,
             commands::cmd_madness_remove_player,
             commands::cmd_status,
