@@ -122,6 +122,7 @@
       resize: vertical; margin-bottom: 8px;
     }
     .modal hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .modal .tm-pick { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
 
     .status {
       font-family: 'Geist Mono', monospace;
@@ -293,10 +294,9 @@
     <span class="spacer"></span>
     <select id="bracket-select" title="Choose a bracket"></select>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
-    <button id="score-btn" title="Score once against the latest transcript">Score now</button>
+    <button id="transcript-btn" title="Score against a transcript file or pasted text — no recording needed">Transcript Mode</button>
     <button id="players-btn" title="Invite players and import their picks">Players</button>
     <button id="celebrate-btn" title="Replay the champion celebration">🏆</button>
-    <button id="refresh-btn" title="Reload from disk">Refresh</button>
   </header>
   <div class="status" id="status">No brackets yet — create one with <code>minutes madness new</code>.</div>
   <div class="recent-bar" id="recent-bar"></div>
@@ -348,6 +348,25 @@
         <div class="diag" id="import-msg"></div>
       </div>
       <div class="actions"><a id="players-close">Close</a></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="transcript-modal">
+    <div class="modal wide">
+      <h3>Transcript Mode</h3>
+      <p>Score this bracket against a transcript of the call — no recording needed.</p>
+      <div class="tm-pick">
+        <button id="tm-file-btn">Choose file…</button>
+        <button id="tm-paste-btn">Paste text</button>
+      </div>
+      <div class="diag" id="tm-source"></div>
+      <textarea id="tm-paste" rows="5" placeholder="Paste the transcript text here…" style="display:none;"></textarea>
+      <p class="diag">Works with a meeting’s markdown, a live-transcript <code>.jsonl</code>, or plain text.</p>
+      <div class="actions">
+        <button class="primary" id="tm-score-btn" disabled>Score bracket</button>
+        <div class="diag" id="tm-msg"></div>
+        <a id="tm-close">Close</a>
+      </div>
     </div>
   </div>
 
@@ -403,7 +422,7 @@
         case 'cmd_needs_setup': return { hasModel: true };
         case 'cmd_download_model': return 'ok';
         case 'cmd_open_file': return null;
-        default: return mockGame(); // cmd_madness_show / cmd_madness_score
+        default: return mockGame(); // cmd_madness_show / cmd_madness_score / cmd_madness_score_text
       }
     }
     const ROUND_NAMES = { 1: 'Round of 16', 2: 'Quarterfinals', 3: 'Semifinals', 4: 'Final' };
@@ -728,6 +747,68 @@
       return true;
     }
 
+    // ── Transcript Mode (score a saved transcript, no recording) ──
+    let tmPath = null; // chosen transcript file path
+
+    function openTranscriptModal() {
+      if (!current) return;
+      tmPath = null;
+      document.getElementById('tm-source').textContent = '';
+      const ta = document.getElementById('tm-paste');
+      ta.value = ''; ta.style.display = 'none';
+      document.getElementById('tm-msg').textContent = '';
+      document.getElementById('tm-score-btn').disabled = true;
+      document.getElementById('transcript-modal').classList.add('show');
+    }
+    function tmUpdateScoreEnabled() {
+      const hasText = document.getElementById('tm-paste').value.trim().length > 0;
+      document.getElementById('tm-score-btn').disabled = !(tmPath || hasText);
+    }
+    async function tmChooseFile() {
+      const dlg = window.__TAURI__ && window.__TAURI__.dialog;
+      if (!dlg) { document.getElementById('tm-msg').textContent = '(file picker unavailable in preview)'; return; }
+      try {
+        const path = await dlg.open({ multiple: false, filters: [{ name: 'Transcript', extensions: ['md', 'markdown', 'txt', 'jsonl', 'vtt', 'srt'] }] });
+        if (path) {
+          tmPath = path;
+          const ta = document.getElementById('tm-paste');
+          ta.value = ''; ta.style.display = 'none'; // one source at a time
+          document.getElementById('tm-source').textContent = 'File: ' + String(path).split(/[\\/]/).pop();
+          tmUpdateScoreEnabled();
+        }
+      } catch (e) { document.getElementById('tm-msg').textContent = String(e); }
+    }
+    function tmTogglePaste() {
+      tmPath = null;
+      document.getElementById('tm-source').textContent = '';
+      const ta = document.getElementById('tm-paste');
+      ta.style.display = 'block'; ta.focus();
+      tmUpdateScoreEnabled();
+    }
+    async function tmScore() {
+      if (!current) return;
+      const msg = document.getElementById('tm-msg');
+      const pasteText = document.getElementById('tm-paste').value.trim();
+      try {
+        let game;
+        if (tmPath) game = await invoke('cmd_madness_score', { slug: current.slug, from: tmPath });
+        else if (pasteText) game = await invoke('cmd_madness_score_text', { slug: current.slug, text: pasteText });
+        else return;
+        prevCounts = null; // reset diff so a one-shot score doesn't spurious-flash
+        render(game);
+        if (game.results && game.results.total_mentions > 0) {
+          document.getElementById('transcript-modal').classList.remove('show');
+          showFanfare();
+        } else {
+          msg.style.color = 'var(--text-secondary)';
+          msg.textContent = 'No buzzwords found in that transcript — double-check it covers the call.';
+        }
+      } catch (e) {
+        msg.style.color = 'var(--red)';
+        msg.textContent = String(e).replace(/^Error:\s*/, '');
+      }
+    }
+
     async function scoreLive() {
       if (!current) return;
       try {
@@ -1017,8 +1098,12 @@
     document.getElementById('import-picks-btn').addEventListener('click', importPicks);
 
     document.getElementById('bracket-select').addEventListener('change', (e) => loadBracket(e.target.value));
-    document.getElementById('refresh-btn').addEventListener('click', () => current && loadBracket(current.slug));
-    document.getElementById('score-btn').addEventListener('click', scoreLive);
+    document.getElementById('transcript-btn').addEventListener('click', openTranscriptModal);
+    document.getElementById('tm-file-btn').addEventListener('click', tmChooseFile);
+    document.getElementById('tm-paste-btn').addEventListener('click', tmTogglePaste);
+    document.getElementById('tm-paste').addEventListener('input', tmUpdateScoreEnabled);
+    document.getElementById('tm-score-btn').addEventListener('click', tmScore);
+    document.getElementById('tm-close').addEventListener('click', () => document.getElementById('transcript-modal').classList.remove('show'));
     document.getElementById('record-btn').addEventListener('click', () => recording ? stopRecording() : startRecording());
     document.getElementById('dl-model-btn').addEventListener('click', downloadModel);
     document.getElementById('model-link').addEventListener('click', () => {

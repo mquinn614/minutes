@@ -13486,6 +13486,19 @@ pub fn cmd_madness_score(
     Ok(game)
 }
 
+/// Score a bracket against raw transcript text (Transcript Mode's paste box).
+#[tauri::command]
+pub fn cmd_madness_score_text(
+    slug: String,
+    text: String,
+) -> Result<minutes_core::madness::BracketGame, String> {
+    use minutes_core::madness;
+    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
+    game.score(&text);
+    madness::save_game(&game).map_err(|e| e.to_string())?;
+    Ok(game)
+}
+
 /// Add or replace a player's full-bracket picks (15 winning seeds in matchup
 /// order). Used by the panel's "Import picks" box. Re-ranks standings against
 /// any existing score so the new player appears immediately.
