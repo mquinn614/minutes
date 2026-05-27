@@ -1086,19 +1086,19 @@
         // - macOS (Metal GPU): partials on + 10s cap. Every ~1.5s we re-transcribe
         //   the growing buffer so buzzwords flash within a second or two; the GPU
         //   keeps up easily and the long cap keeps multi-word phrases intact.
-        // - Windows (CPU-only whisper build): partials OFF + shorter cap. On CPU
-        //   the partial re-transcriptions can't keep up with real time, so whisper
+        // - Windows (CPU-only whisper build): partials OFF + short 3s cap. Each
+        //   partial re-transcribes the entire growing utterance buffer (cost is
+        //   O(buffer_len) per pass), and a CPU-only build can't sustain that — it
         //   falls progressively behind AND the bounded audio queue overflows,
-        //   dropping spoken buzzwords entirely. Dropping partials cuts the whisper
-        //   load ~6-7x; a shorter cap finalizes utterances faster so words still
-        //   surface in a few seconds. Net: accurate + roughly real-time on CPU.
+        //   dropping spoken buzzwords entirely. Wider 2.5s/5s partials were still
+        //   extremely laggy in practice. Turning partials OFF means exactly one
+        //   transcription per utterance (the finalize); the 3s cap finalizes fast
+        //   so buzzwords surface in ~3-4s. Net: no backlog, no drops, roughly
+        //   real-time on CPU. (GPU Windows builds measure much faster — a future
+        //   auto-adapt step can lift this once per-host RTF is measured.)
         const cpuBound = /Windows/i.test(navigator.userAgent || '');
-        // Windows (CPU whisper): wider 2.5s partial cadence + 5s cap keeps
-        // buzzwords flashing in ~2.5-5s while staying under real time (~5x less
-        // whisper work than the 1.5s/10s config that backed up and dropped
-        // audio). macOS (Metal GPU) keeps the snappy 1.5s/10s.
         const liveOpts = cpuBound
-          ? { cap: 5, partials: true, partialSecs: 2.5 }
+          ? { cap: 3, partials: false }
           : { cap: 10, partials: true, partialSecs: 1.5 };
         await invoke('cmd_start_live_transcript', liveOpts);
       } catch (e) {

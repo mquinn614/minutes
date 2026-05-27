@@ -30,11 +30,19 @@ Already FIXED and verified on Windows (don't re-investigate these):
 
 The lag itself is the open item. Mechanism: with partials on, every partial
 re-transcribes the *entire growing utterance buffer*; on this CPU whisper can't
-do that in real time, so it backs up and drops audio. Current Windows config
-(panel `startRecording`): `{ cap: 5, partials: true, partialSecs: 2.5 }`. macOS:
-`{ cap: 10, partials: true, partialSecs: 1.5 }`. **User reports 2.5s/5s is still
-extremely laggy** — so this CPU is slower than the ~0.43x-realtime estimate from
-batch logs, likely due to per-whisper-call overhead on short partial buffers.
+do that in real time, so it backs up and drops audio. `{ cap: 5, partials: true,
+partialSecs: 2.5 }` was **still extremely laggy** in practice — this CPU is
+slower than the ~0.43x-realtime estimate from batch logs, likely due to
+per-whisper-call overhead on short partial buffers.
+
+**SHIPPED CPU baseline (panel `startRecording`):** Windows now uses
+`{ cap: 3, partials: false }` — partials OFF means exactly one transcription per
+utterance (the finalize), eliminating the O(buffer_len)-per-partial backlog and
+the queue overflow that dropped buzzwords. ~3-4s flash latency, no drops. macOS
+(Metal GPU) keeps `{ cap: 10, partials: true, partialSecs: 1.5 }`. **Verify on
+the PC**: speak the bracket buzzwords and confirm every one lands within a few
+seconds with no drops. If even finalize-only `base` can't keep up on a weak
+host, fall to the `tiny` live model (next section).
 
 ## DISTRIBUTION TARGET (read this — it shapes the whole fix)
 This will spread to MULTIPLE non-technical hosts on VARIED, often weak hardware
@@ -97,6 +105,13 @@ CI build is CPU-only by choice (`--features parakeet`).
 2. Test build with `--features parakeet,vulkan` (broad; needs Vulkan SDK at build,
    a Vulkan driver at run; SHOULD fall back to CPU if no device — verify that).
    `--features parakeet,cuda` only for a known NVIDIA host (CUDA Toolkit + runtime).
+   **No local toolchain needed:** a manually-triggered CI job builds this Vulkan
+   artifact for you — Actions → "Windows Vulkan Experiment" → Run workflow (or
+   `gh workflow run "Windows Vulkan Experiment" -R mquinn614/minutes --ref experiments`),
+   then download artifact `minutes-desktop-windows-x64-vulkan` (~16 min). It uses
+   the AVX2 CPU ceiling for its fallback path, so installing it on a no-GPU host
+   also tests the clean-fallback question in (3b). Workflow:
+   `.github/workflows/windows-vulkan-experiment.yml`.
 3. Goal of the test: (a) does GPU make base real-time here? (ceiling check), and
    (b) is a Vulkan build a viable SINGLE broad artifact (fast w/ GPU, clean CPU
    fallback, stable across drivers)? If yes, it could ship to all hosts; if the
