@@ -306,7 +306,11 @@
     .fanfare-card .crown { font-size: 38px; margin-bottom: 4px; }
     .fanfare-card .ff-label { font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold); margin-bottom: 10px; }
     .fanfare-card h2 { font-family: 'Instrument Serif', serif; font-weight: 400; font-size: 56px; line-height: 1.05; color: var(--text); }
-    .fanfare-card h2 .who { color: var(--accent); font-style: italic; }
+    /* Champion buzzword / winning player. Geist Mono (not the display serif)
+       so acronyms like "AI" render cleanly — Instrument Serif draws a short
+       capital A that clashes on all-caps terms — and to match how buzzwords
+       appear everywhere else in the app. */
+    .fanfare-card h2 .who { color: var(--accent); font-family: 'Geist Mono', monospace; font-weight: 600; font-size: 40px; letter-spacing: -0.01em; }
     .fanfare-card .ff-sub { margin-top: 14px; font-family: 'Geist Mono', monospace; font-size: 13px; color: var(--text-secondary); }
     .fanfare-card .ff-sub b { color: var(--text); font-weight: 500; }
     .fanfare-hint { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-family: 'Geist Mono', monospace; font-size: 11px; color: var(--text-tertiary); z-index: 2; }
