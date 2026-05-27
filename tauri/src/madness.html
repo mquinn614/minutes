@@ -407,6 +407,7 @@
       <div id="bw-rows"></div>
       <div class="diag" id="bw-msg"></div>
       <div class="actions" style="flex-direction:row; gap:10px; justify-content:flex-end; align-items:center;">
+        <a id="bw-reset" style="margin-right:auto;">Reset to defaults</a>
         <a id="bw-cancel">Cancel</a>
         <button class="primary" id="bw-save">Save buzzwords</button>
       </div>
@@ -1049,11 +1050,17 @@
       return Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
     }
 
-    function updateRecordButton(status) {
+    function updateRecordButton() {
       const btn = document.getElementById('record-btn');
       if (recording) {
         btn.className = 'primary recording';
-        btn.innerHTML = `■ Stop recording<span class="rec-timer">${fmtTimer(status && status.duration_secs)}</span>`;
+        // Wall-clock elapsed, NOT status.duration_secs: the backend's status
+        // sidecar gates its line_count/duration on a PID-liveness check that's
+        // unreliable for the in-app session on Windows (zeroes out mid-session),
+        // which froze the timer at 0:00. Wall-clock always advances while we're
+        // recording; the bracket still scores off the JSONL independently.
+        const elapsed = startupAt ? (Date.now() - startupAt) / 1000 : 0;
+        btn.innerHTML = `■ Stop recording<span class="rec-timer">${fmtTimer(elapsed)}</span>`;
       } else {
         btn.className = 'primary';
         btn.innerHTML = '● Start recording';
@@ -1124,11 +1131,15 @@
       let status = null;
       try { status = await invoke('cmd_live_transcript_status'); } catch (e) { /* ignore */ }
       if (recording && status) {
-        updateRecordButton(status);
+        updateRecordButton();
         if (status.active) {
-          // Capturing, but if no utterance lands in the first ~15s, the mic is
-          // likely muted/blocked or the wrong input is selected.
-          if ((status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
+          // Audio-activity check via audioLevel (mic energy straight from the
+          // capture callback) OR line_count. We can't rely on line_count alone:
+          // the status sidecar zeroes it when the PID-liveness gate fails (the
+          // in-app session on Windows), which used to trip a false "no audio"
+          // nudge even while the mic was clearly working. audioLevel isn't gated
+          // that way, so it reflects real input.
+          if ((status.audioLevel || 0) > 0 || (status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
           else if (!audioOk && Date.now() - startupAt > 15000) showAudioNudge();
         } else if (Date.now() - startupAt > 6000) {
           // Session ended/failed to start.
@@ -1333,6 +1344,12 @@
     document.getElementById('buzzwords-btn').addEventListener('click', openBuzzwordsModal);
     document.getElementById('bw-cancel').addEventListener('click', () => document.getElementById('buzzwords-modal').classList.remove('show'));
     document.getElementById('bw-save').addEventListener('click', saveBuzzwords);
+    // Reload the editor rows with the built-in default 16 (handy for refreshing
+    // a bracket whose saved terms predate an alias update). Title left as-is.
+    document.getElementById('bw-reset').addEventListener('click', () => {
+      renderBwRows(DEFAULT_TERMS.slice());
+      document.getElementById('bw-msg').textContent = '';
+    });
     document.getElementById('transcript-btn').addEventListener('click', openTranscriptModal);
     document.getElementById('tm-file-btn').addEventListener('click', tmChooseFile);
     document.getElementById('tm-paste-btn').addEventListener('click', tmTogglePaste);
