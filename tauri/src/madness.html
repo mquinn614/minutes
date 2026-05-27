@@ -465,7 +465,7 @@
           return { active: mockLiveStart > 0, line_count: mockLiveStart > 0 ? 3 : 0, duration_secs: mockLiveStart > 0 ? (Date.now() - mockLiveStart) / 1000 : 0, audioLevel: 0 };
         case 'cmd_start_live_transcript': mockLiveStart = Date.now(); return null;
         case 'cmd_stop_live_transcript': mockLiveStart = 0; return null;
-        case 'cmd_needs_setup': return { hasModel: true };
+        case 'cmd_needs_setup': return { hasModel: true, standalone_live: { ready: true } };
         case 'cmd_download_model': return 'ok';
         case 'cmd_open_file': return null;
         default: return mockGame(); // cmd_madness_show / cmd_madness_score / cmd_madness_score_text
@@ -1062,6 +1062,18 @@
 
     async function startRecording() {
       if (!current) return;
+      // Pre-flight: live transcription uses its OWN speech model (base by
+      // default) — separate from the batch model the core recorder uses. On a
+      // fresh machine the live model can be missing while batch recording works,
+      // which would otherwise launch a session that silently captures nothing
+      // (no model → no utterances → frozen 0:00). Prompt to download it first.
+      try {
+        const setup = await invoke('cmd_needs_setup');
+        if (setup && setup.standalone_live && setup.standalone_live.ready === false) {
+          showModelPrompt(setup.standalone_live.detail || 'The live speech model isn’t installed yet.');
+          return;
+        }
+      } catch (e) { /* if the readiness check fails, fall through and try anyway */ }
       try {
         // Partials drive flash speed (buzzwords surface before an utterance
         // finalizes), so we can keep a longer 10s cap for clean transcripts and
