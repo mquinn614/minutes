@@ -1093,7 +1093,13 @@
         //   load ~6-7x; a shorter cap finalizes utterances faster so words still
         //   surface in a few seconds. Net: accurate + roughly real-time on CPU.
         const cpuBound = /Windows/i.test(navigator.userAgent || '');
-        const liveOpts = cpuBound ? { cap: 6, partials: false } : { cap: 10, partials: true };
+        // Windows (CPU whisper): wider 2.5s partial cadence + 5s cap keeps
+        // buzzwords flashing in ~2.5-5s while staying under real time (~5x less
+        // whisper work than the 1.5s/10s config that backed up and dropped
+        // audio). macOS (Metal GPU) keeps the snappy 1.5s/10s.
+        const liveOpts = cpuBound
+          ? { cap: 5, partials: true, partialSecs: 2.5 }
+          : { cap: 10, partials: true, partialSecs: 1.5 };
         await invoke('cmd_start_live_transcript', liveOpts);
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine; just attach to it.

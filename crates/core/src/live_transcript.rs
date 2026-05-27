@@ -544,6 +544,7 @@ pub fn run(
     config: &Config,
     existing_context_session_id: Option<String>,
     emit_partials: bool,
+    partial_interval_secs: Option<f64>,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     let mark_precreated_session_failed = |error: &MinutesError| {
         if let Some(session_id) = existing_context_session_id.as_deref() {
@@ -601,7 +602,13 @@ pub fn run(
         )
     };
 
-    match run_inner(stop_flag, config, context_session_id.clone(), emit_partials) {
+    match run_inner(
+        stop_flag,
+        config,
+        context_session_id.clone(),
+        emit_partials,
+        partial_interval_secs,
+    ) {
         Ok((lines, duration, path)) => {
             if let Some(session_id) = context_session_id.as_deref() {
                 let wav_path = pid::live_transcript_wav_path();
@@ -657,6 +664,7 @@ fn run_inner(
     config: &Config,
     context_session_id: Option<String>,
     emit_partials: bool,
+    partial_interval_secs: Option<f64>,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     clear_live_partial(emit_partials); // drop any stale partial from a crashed prior session
     let mut whisper_ctx: Option<whisper_rs::WhisperContext> = None;
@@ -690,9 +698,11 @@ fn run_inner(
         config.transcription.partial_max_secs,
     );
     // Minutes Madness: snappier partial cadence for live scoring. Off by
-    // default (core/CLI keep the standard 2s interval).
+    // default (core/CLI keep the standard 2s interval). The caller may also
+    // widen the interval (e.g. 2.5s on CPU-only Windows builds, where the
+    // default 1.5s can't be transcribed in real time and backs up).
     if emit_partials {
-        streaming.set_partial_interval_secs(1.5);
+        streaming.set_partial_interval_secs(partial_interval_secs.unwrap_or(1.5) as f32);
     }
     let standalone_backend = config.effective_live_transcript_backend();
     #[cfg(target_os = "macos")]
@@ -1121,6 +1131,7 @@ pub fn run(
     _config: &Config,
     _existing_context_session_id: Option<String>,
     _emit_partials: bool,
+    _partial_interval_secs: Option<f64>,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     Err(
         TranscribeError::ModelLoadError("live transcript requires the whisper feature".into())

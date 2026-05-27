@@ -11259,6 +11259,7 @@ fn run_live_session(
     stop_flag: Arc<AtomicBool>,
     max_utterance_cap: Option<u64>,
     emit_partials: bool,
+    partial_interval_secs: Option<f64>,
 ) {
     let _guard = LiveActiveGuard {
         active,
@@ -11312,6 +11313,7 @@ fn run_live_session(
         &config,
         live_context_session_id.clone(),
         emit_partials,
+        partial_interval_secs,
     );
 
     stop_flag.store(false, Ordering::Relaxed);
@@ -11418,6 +11420,7 @@ pub fn cmd_start_live_transcript(
     state: tauri::State<AppState>,
     cap: Option<u64>,
     partials: Option<bool>,
+    partial_secs: Option<f64>,
 ) -> Result<(), String> {
     try_acquire_live(&state)?;
 
@@ -11427,7 +11430,9 @@ pub fn cmd_start_live_transcript(
 
     let emit_partials = partials.unwrap_or(false);
     let app_clone = app.clone();
-    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, cap, emit_partials));
+    std::thread::spawn(move || {
+        run_live_session(app_clone, active, stop_flag, cap, emit_partials, partial_secs)
+    });
 
     if let Some(win) = app.get_webview_window("main") {
         win.emit("live-transcript:started", ()).ok();
@@ -11502,7 +11507,9 @@ pub fn handle_live_shortcut_event(
         let stop_flag = state.live_transcript_stop_flag.clone();
         stop_flag.store(false, Ordering::Relaxed);
         let app_clone = app.clone();
-        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag, None, false));
+        std::thread::spawn(move || {
+            run_live_session(app_clone, active, stop_flag, None, false, None)
+        });
         if let Some(win) = app.get_webview_window("main") {
             win.emit("live-transcript:started", ()).ok();
         }
