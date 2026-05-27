@@ -856,16 +856,13 @@
 
     function openBuzzwordsModal() {
       const titleEl = document.getElementById('bw-title');
-      let lines;
-      if (current && current.terms && current.terms.length === 16) {
-        titleEl.value = current.title || '';
-        lines = [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine);
-      } else {
-        // Leave the title blank so the placeholder tip shows; if they save
-        // without one, saveBuzzwords falls back to "My Bracket - mm/dd/yy".
-        titleEl.value = (current && current.title) || '';
-        lines = DEFAULT_TERMS.slice();
-      }
+      const lines = (current && current.terms && current.terms.length === 16)
+        ? [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine)
+        : DEFAULT_TERMS.slice();
+      // Always start the title blank so the placeholder tip is visible. If the
+      // user saves without typing one, saveBuzzwords keeps the existing
+      // bracket's name (when editing) or auto-names "My Bracket - mm/dd/yy".
+      titleEl.value = '';
       renderBwRows(lines);
       document.getElementById('bw-msg').textContent = '';
       document.getElementById('buzzwords-modal').classList.add('show');
@@ -921,9 +918,14 @@
       const filled = lines.filter((l) => l.length > 0);
       if (filled.length !== 16) { msg.style.color = 'var(--red)'; msg.textContent = `Fill all 16 buzzwords (${filled.length}/16).`; return; }
       if (!title) {
-        // No title given — fall back to "My Bracket - mm/dd/yy".
-        const d = new Date(), pad = (n) => String(n).padStart(2, '0');
-        title = `My Bracket - ${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`;
+        // No title typed: keep the existing bracket's name when editing,
+        // otherwise auto-name a fresh one "My Bracket - mm/dd/yy".
+        if (current && current.title) {
+          title = current.title;
+        } else {
+          const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+          title = `My Bracket - ${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${String(d.getFullYear()).slice(-2)}`;
+        }
       }
       if (current && current.results) {
         if (!(await confirmDialog('Changing buzzwords starts a fresh round. This clears the current results and players. Continue?'))) return;
