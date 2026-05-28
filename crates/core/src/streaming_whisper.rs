@@ -182,6 +182,9 @@ impl StreamingWhisper {
 
     /// Run whisper on the full accumulated buffer.
     fn transcribe(&mut self, ctx: &WhisperContext, is_final: bool) -> Option<StreamingResult> {
+        // Total per-call time including create_state (the synthetic benchmark
+        // omits state creation — this captures the real in-situ cost).
+        let call_start = std::time::Instant::now();
         // Suppress whisper's noisy C-level stderr output on subsequent state creations.
         // The first call prints GPU/backend info (useful); subsequent calls repeat it (noise).
         let mut state = if self.has_created_state {
@@ -206,6 +209,21 @@ impl StreamingWhisper {
 
         let elapsed_ms = start.elapsed().as_millis();
         let duration_secs = self.audio_buffer.len() as f64 / 16000.0;
+
+        // Opt-in live-perf diagnostics (env MINUTES_LIVE_TIMING; no-op otherwise).
+        // Logs the REAL per-call cost — incl. create_state — vs buffer length,
+        // plus cumulative dropped chunks, so we can see where live lag/drops
+        // actually come from on the target hardware.
+        let total_ms = call_start.elapsed().as_millis();
+        crate::live_timing::log(&format!(
+            "whisper {} buf={:.1}s full={}ms total(+state)={}ms rtf={:.2} dropped_chunks={}",
+            if is_final { "FINAL  " } else { "partial" },
+            duration_secs,
+            elapsed_ms,
+            total_ms,
+            total_ms as f64 / 1000.0 / duration_secs.max(0.001),
+            crate::live_timing::dropped_chunks()
+        ));
 
         // Extract text from all segments
         let num_segments = state.full_n_segments();

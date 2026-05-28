@@ -219,13 +219,21 @@ impl AudioStream {
                         STREAM_AUDIO_LEVEL.store(level, Ordering::Relaxed);
                         let idx = chunk_counter;
                         chunk_counter += 1;
-                        let _ = tx.try_send(AudioChunk {
-                            samples,
-                            rms,
-                            timestamp: Instant::now(),
-                            index: idx,
-                            source: SourceRole::Default,
-                        });
+                        if tx
+                            .try_send(AudioChunk {
+                                samples,
+                                rms,
+                                timestamp: Instant::now(),
+                                index: idx,
+                                source: SourceRole::Default,
+                            })
+                            .is_err()
+                        {
+                            // Queue full → whisper isn't keeping up; this chunk
+                            // (100ms of audio) is lost. Tracked for live-timing
+                            // diagnostics (see crate::live_timing).
+                            crate::live_timing::record_dropped_chunk();
+                        }
                     }
                 }
             },
