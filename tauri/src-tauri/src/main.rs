@@ -308,7 +308,7 @@ fn show_madness_window(app: &tauri::AppHandle) {
         win.set_focus().ok();
         return;
     }
-    let _win = WebviewWindowBuilder::new(app, "madness", WebviewUrl::App("madness.html".into()))
+    let win_result = WebviewWindowBuilder::new(app, "madness", WebviewUrl::App("madness.html".into()))
         .title("Minutes Madness")
         .inner_size(1320.0, 860.0)
         .min_inner_size(860.0, 560.0)
@@ -316,6 +316,15 @@ fn show_madness_window(app: &tauri::AppHandle) {
         .center()
         .focused(true)
         .build();
+    // Madness is an intentionally focused, self-contained panel — its in-panel
+    // header is the entire control surface, so we drop the inherited app menu
+    // (File/Edit/Window/Help) on Windows/Linux. macOS keeps the system menu,
+    // which lives in the screen menu bar and applies app-wide anyway.
+    #[cfg(not(target_os = "macos"))]
+    if let Ok(win) = win_result.as_ref() {
+        let _ = win.remove_menu();
+    }
+    let _ = win_result;
 }
 
 pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &str) {
