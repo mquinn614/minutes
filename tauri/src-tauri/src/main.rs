@@ -48,14 +48,32 @@ fn cleanup_before_process_exit(app: &tauri::AppHandle) {
 }
 
 fn exit_process_without_destructors(code: i32) -> ! {
-    #[cfg(target_os = "macos")]
+    // macOS + Linux + Windows all need the libc::_exit path, NOT
+    // std::process::exit. Rationale:
+    //
+    // std::process::exit on Windows drains the C-runtime atexit chain
+    // before terminating. WebView2 + Tauri + tao register atexit handlers
+    // that try to coordinate with the event-loop thread. When called from
+    // our worker thread during tray Quit, those handlers wait on event-loop
+    // work that the still-running UI is currently servicing (subsequent tray
+    // clicks, etc.) — so exit blocks indefinitely. User-visible: window
+    // hides successfully, but the process keeps running, the tray icon
+    // stays, and Quit "does nothing" on every subsequent click.
+    //
+    // libc::_exit bypasses the atexit chain entirely. It's the C99 "I am
+    // terminating immediately, do not pass go" syscall. Equivalent on
+    // Windows to calling kernel32::ExitProcess, which is what production
+    // WebView2 hosts ship for the same reason. WebView2 windows are
+    // already hidden by the time we get here (see `predrain_webview_windows`
+    // in `request_clean_exit`), so the COM teardown that the atexit chain
+    // would have run has already happened — skipping it just skips the
+    // pumping-loop dependency, not actual cleanup.
+    //
+    // The function name was already aspirational ("without_destructors"
+    // suggested it skipped Drop) but on non-macOS it actually ran the full
+    // atexit chain. Now it actually lives up to the name on all platforms.
     unsafe {
         libc::_exit(code);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        std::process::exit(code);
     }
 }
 
