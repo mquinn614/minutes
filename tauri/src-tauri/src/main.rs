@@ -34,20 +34,36 @@ const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/rele
 const MINUTES_DISCUSSIONS_URL: &str = "https://github.com/silverstein/minutes/discussions";
 
 static CLEAN_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+const CLEAN_EXIT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 fn cleanup_before_process_exit(app: &tauri::AppHandle) {
+    tracing::info!(
+        target: "minutes::shutdown",
+        pid = std::process::id(),
+        "cleanup_before_process_exit: starting"
+    );
     if let Some(state) = app.try_state::<commands::AppState>() {
         if let Ok(mut mgr) = state.pty_manager.lock() {
+            tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: killing PTY sessions");
             mgr.kill_all();
         }
     }
+    tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: shutting down parakeet sidecar");
     minutes_core::parakeet_sidecar::shutdown_global_parakeet_sidecar();
+    tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: done");
 }
 
 fn exit_process_without_destructors(code: i32) -> ! {
+    tracing::info!(
+        target: "minutes::shutdown",
+        pid = std::process::id(),
+        code,
+        "exit_process_without_destructors: entered"
+    );
     // Process-termination cascade by platform:
     //
     // macOS / Linux: libc::_exit is sufficient. POSIX _exit terminates
@@ -81,22 +97,47 @@ fn exit_process_without_destructors(code: i32) -> ! {
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        tracing::info!(
+            target: "minutes::shutdown",
+            code,
+            "exit_process_without_destructors: calling TerminateProcess(GetCurrentProcess)"
+        );
         // GetCurrentProcess returns a pseudo-handle that doesn't need closing.
         // Cast i32 → u32 because Windows exit codes are DWORD; negative codes
         // wrap (intentional, matches MSVC convention).
         TerminateProcess(GetCurrentProcess(), code as u32);
+        tracing::error!(
+            target: "minutes::shutdown",
+            "exit_process_without_destructors: TerminateProcess returned unexpectedly"
+        );
     }
 
     // POSIX path (macOS, Linux), and a belt-and-suspenders fallback on Windows
     // if TerminateProcess somehow returned (per Microsoft docs it never does
     // when called on the current process, but the BOOL signature is fallible).
     unsafe {
+        tracing::info!(
+            target: "minutes::shutdown",
+            code,
+            "exit_process_without_destructors: falling back to libc::_exit"
+        );
         libc::_exit(code);
     }
 }
 
 fn finish_clean_exit(app: tauri::AppHandle, code: i32) -> ! {
+    tracing::info!(
+        target: "minutes::shutdown",
+        pid = std::process::id(),
+        code,
+        "finish_clean_exit: begin"
+    );
     cleanup_before_process_exit(&app);
+    tracing::info!(
+        target: "minutes::shutdown",
+        code,
+        "finish_clean_exit: cleanup complete; terminating process"
+    );
     exit_process_without_destructors(code);
 }
 
@@ -117,35 +158,113 @@ fn finish_clean_exit(app: tauri::AppHandle, code: i32) -> ! {
 /// CloseRequested handlers that race the exit.
 #[cfg(not(target_os = "macos"))]
 fn predrain_webview_windows(app: &tauri::AppHandle) {
+    tracing::info!(
+        target: "minutes::shutdown",
+        window_count = app.webview_windows().len(),
+        "predrain_webview_windows: hiding all webview windows"
+    );
     for (_label, window) in app.webview_windows() {
         let _ = window.hide();
     }
 }
 
+#[cfg(target_os = "windows")]
+fn spawn_windows_exit_watchdog(code: i32, reason: &'static str) {
+    tracing::info!(
+        target: "minutes::shutdown",
+        pid = std::process::id(),
+        code,
+        reason,
+        timeout_ms = CLEAN_EXIT_WATCHDOG_TIMEOUT.as_millis() as u64,
+        "shutdown watchdog armed"
+    );
+    std::thread::spawn(move || {
+        std::thread::sleep(CLEAN_EXIT_WATCHDOG_TIMEOUT);
+        tracing::error!(
+            target: "minutes::shutdown",
+            pid = std::process::id(),
+            code,
+            reason,
+            "shutdown watchdog fired: forcing TerminateProcess"
+        );
+        unsafe {
+            use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+            TerminateProcess(GetCurrentProcess(), code as u32);
+            tracing::error!(
+                target: "minutes::shutdown",
+                "shutdown watchdog: TerminateProcess returned unexpectedly; calling libc::_exit"
+            );
+            libc::_exit(code);
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_windows_exit_watchdog(_code: i32, _reason: &'static str) {}
+
 fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
     if CLEAN_EXIT_STARTED.swap(true, Ordering::SeqCst) {
+        tracing::info!(
+            target: "minutes::shutdown",
+            code,
+            "request_clean_exit: ignored duplicate request (already started)"
+        );
         return;
     }
 
+    tracing::info!(
+        target: "minutes::shutdown",
+        pid = std::process::id(),
+        code,
+        "request_clean_exit: accepted"
+    );
+    spawn_windows_exit_watchdog(code, "request_clean_exit");
+
     let state = app.state::<commands::AppState>();
-    if commands::recording_active(&state.recording) {
+    let recording_active = commands::recording_active(&state.recording);
+    tracing::info!(
+        target: "minutes::shutdown",
+        recording_active,
+        "request_clean_exit: recording status sampled"
+    );
+    if recording_active {
         if commands::request_stop(&state.recording, &state.stop_flag).is_err() {
+            tracing::error!(
+                target: "minutes::shutdown",
+                "request_clean_exit: request_stop failed; resetting CLEAN_EXIT_STARTED"
+            );
             CLEAN_EXIT_STARTED.store(false, Ordering::SeqCst);
             return;
         }
+        tracing::info!(
+            target: "minutes::shutdown",
+            "request_clean_exit: request_stop succeeded; waiting for recording shutdown"
+        );
 
         #[cfg(not(target_os = "macos"))]
         predrain_webview_windows(app);
 
         let app_handle = app.clone();
         std::thread::spawn(move || {
+            tracing::info!(
+                target: "minutes::shutdown",
+                "request_clean_exit worker: waiting for recording shutdown sentinel"
+            );
             commands::wait_for_recording_shutdown_forever();
+            tracing::info!(
+                target: "minutes::shutdown",
+                "request_clean_exit worker: recording shutdown observed"
+            );
             // Brief sleep gives the UI event loop time to process the
             // window-hide messages and let WebView2 finish its
             // cross-apartment COM calls before the terminal exit yanks
             // the process out from under it. Below human perception.
             #[cfg(not(target_os = "macos"))]
             std::thread::sleep(std::time::Duration::from_millis(200));
+            tracing::info!(
+                target: "minutes::shutdown",
+                "request_clean_exit worker: invoking finish_clean_exit"
+            );
             finish_clean_exit(app_handle, code);
         });
     } else {
@@ -173,10 +292,22 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
         finish_clean_exit(app.clone(), code);
         #[cfg(not(target_os = "macos"))]
         {
+            tracing::info!(
+                target: "minutes::shutdown",
+                "request_clean_exit: non-mac immediate branch; predraining windows"
+            );
             predrain_webview_windows(app);
             let app_handle = app.clone();
             std::thread::spawn(move || {
+                tracing::info!(
+                    target: "minutes::shutdown",
+                    "request_clean_exit worker: non-recording branch sleep before finish_clean_exit"
+                );
                 std::thread::sleep(std::time::Duration::from_millis(200));
+                tracing::info!(
+                    target: "minutes::shutdown",
+                    "request_clean_exit worker: invoking finish_clean_exit"
+                );
                 finish_clean_exit(app_handle, code);
             });
         }
@@ -2570,6 +2701,11 @@ fn main() {
         .expect("error while building minutes app")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
+                tracing::info!(
+                    target: "minutes::shutdown",
+                    code = ?code,
+                    "RunEvent::ExitRequested received"
+                );
                 if code == Some(tauri::RESTART_EXIT_CODE) {
                     cleanup_before_process_exit(app);
                 } else {
