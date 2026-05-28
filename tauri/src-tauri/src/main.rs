@@ -2350,6 +2350,7 @@ fn main() {
             commands::cmd_madness_set_terms,
             commands::cmd_madness_add_player,
             commands::cmd_madness_remove_player,
+            commands::cmd_probe_live_config,
             commands::cmd_status,
             commands::cmd_processing_jobs,
             commands::cmd_list_meetings,

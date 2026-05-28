@@ -11260,6 +11260,7 @@ fn run_live_session(
     max_utterance_cap: Option<u64>,
     emit_partials: bool,
     partial_interval_secs: Option<f64>,
+    model_override: Option<String>,
 ) {
     let _guard = LiveActiveGuard {
         active,
@@ -11277,6 +11278,17 @@ fn run_live_session(
     if let Some(secs) = max_utterance_cap {
         if secs > 0 {
             config.live_transcript.max_utterance_secs = secs;
+        }
+    }
+
+    // Caller-supplied live model override (in-memory only — same isolation as
+    // the cap above). Minutes Madness's auto-tuner uses this to escalate from
+    // `base` to `tiny` when the host can't sustain `base` even finalize-only;
+    // empty strings are ignored so the JSON shape `{"model": ""}` is harmless.
+    if let Some(m) = model_override {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() {
+            config.live_transcript.model = trimmed.to_string();
         }
     }
 
@@ -11421,6 +11433,7 @@ pub fn cmd_start_live_transcript(
     cap: Option<u64>,
     partials: Option<bool>,
     partial_secs: Option<f64>,
+    model: Option<String>,
 ) -> Result<(), String> {
     try_acquire_live(&state)?;
 
@@ -11431,7 +11444,15 @@ pub fn cmd_start_live_transcript(
     let emit_partials = partials.unwrap_or(false);
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        run_live_session(app_clone, active, stop_flag, cap, emit_partials, partial_secs)
+        run_live_session(
+            app_clone,
+            active,
+            stop_flag,
+            cap,
+            emit_partials,
+            partial_secs,
+            model,
+        )
     });
 
     if let Some(win) = app.get_webview_window("main") {
@@ -11508,7 +11529,7 @@ pub fn handle_live_shortcut_event(
         stop_flag.store(false, Ordering::Relaxed);
         let app_clone = app.clone();
         std::thread::spawn(move || {
-            run_live_session(app_clone, active, stop_flag, None, false, None)
+            run_live_session(app_clone, active, stop_flag, None, false, None, None)
         });
         if let Some(win) = app.get_webview_window("main") {
             win.emit("live-transcript:started", ()).ok();
@@ -13427,6 +13448,219 @@ mod update_ui_tests {
 }
 
 // ── Minutes Madness (buzzword bracket game) ─────────────────────
+
+/// Schema version for the on-disk probe cache. Bump this whenever the JSON
+/// shape changes so stale files from a previous build are silently rejected
+/// instead of confusing the panel.
+const PROBE_CACHE_VERSION: u32 = 1;
+
+/// Probe results stay valid for a week. Long enough that hosts don't re-probe
+/// every session, short enough that a GPU driver swap or thermal re-mapping
+/// gets reconsidered without an explicit user action.
+const PROBE_CACHE_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// Compile-time backend identifier used as part of the probe cache key. RTF
+/// differs by orders of magnitude across these backends (CPU ~0.66x vs Vulkan
+/// ~0.03x on the same host) so we never want to pick a config calibrated on
+/// the wrong one.
+fn current_whisper_backend() -> &'static str {
+    if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else if cfg!(feature = "hipblas") {
+        "hipblas"
+    } else if cfg!(feature = "coreml") {
+        "coreml"
+    } else {
+        "cpu"
+    }
+}
+
+/// Whether the compiled build wired a GPU backend into whisper-rs. Passed to
+/// the probe so the WhisperContext flips `use_gpu` to match the runtime live
+/// session.
+fn whisper_backend_uses_gpu() -> bool {
+    cfg!(any(
+        feature = "metal",
+        feature = "cuda",
+        feature = "vulkan",
+        feature = "hipblas",
+        feature = "coreml"
+    ))
+}
+
+fn madness_dir() -> PathBuf {
+    Config::minutes_dir().join("madness")
+}
+
+fn probe_cache_path(model: &str, backend: &str) -> PathBuf {
+    madness_dir().join(format!("probe-{}-{}.json", model, backend))
+}
+
+/// Return a fresh cached probe result if one exists and is still within TTL,
+/// tagged with `"cached": true` so the panel can show "loaded from cache" UX
+/// distinct from a fresh probe. Any read/parse/version/TTL miss yields None
+/// (the cache is purely an optimization; corruption is never fatal).
+fn read_probe_cache(model: &str, backend: &str) -> Option<serde_json::Value> {
+    let path = probe_cache_path(model, backend);
+    let bytes = std::fs::read(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if v.get("version").and_then(|x| x.as_u64()) != Some(PROBE_CACHE_VERSION as u64) {
+        return None;
+    }
+    let measured_at_str = v.get("measured_at").and_then(|x| x.as_str())?;
+    let measured_at = chrono::DateTime::parse_from_rfc3339(measured_at_str).ok()?;
+    let age_secs = chrono::Local::now()
+        .signed_duration_since(measured_at)
+        .num_seconds();
+    if !(0..=PROBE_CACHE_TTL_SECS).contains(&age_secs) {
+        return None;
+    }
+    let mut out = v;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("cached".into(), serde_json::Value::Bool(true));
+    }
+    Some(out)
+}
+
+fn write_probe_cache(model: &str, backend: &str, value: &serde_json::Value) -> io::Result<()> {
+    std::fs::create_dir_all(madness_dir())?;
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    std::fs::write(probe_cache_path(model, backend), bytes)
+}
+
+/// Micro-benchmark the live whisper model on this host and return the live
+/// config the auto-tuner picks.
+///
+/// Times five short transcriptions on a bundled demo clip (see
+/// [`minutes_core::live_probe`]), fits the shared linear cost model, then runs
+/// [`minutes_core::live_autotune::choose`] across the canonical
+/// snappiest→safest ladder. The panel calls this once before
+/// `startRecording`; results are cached per (model, backend) at
+/// `~/.minutes/madness/probe-{model}-{backend}.json` so repeat sessions on
+/// the same host skip the ~5–10s probe.
+///
+/// When `model` is None we use `config.live_transcript.model` (empty → `base`).
+/// Passing `model = Some("tiny")` is how the panel re-probes for an escalated
+/// model when `base` can't keep up. The returned `escalate_to_tiny` flag
+/// signals that situation to the panel without baking the escalation policy
+/// into the core.
+#[tauri::command]
+pub async fn cmd_probe_live_config(model: Option<String>) -> Result<serde_json::Value, String> {
+    // No `cfg(feature = "whisper")` here: `minutes-app` doesn't define its own
+    // `whisper` feature, and `minutes-core`'s `whisper` is a default feature
+    // pulled in transitively (and never disabled in our builds). Gating here
+    // would silently compile to a stub and confuse the panel. If a future
+    // build ever disables `minutes-core`'s default features, the module path
+    // below stops resolving and the build fails loudly — which is correct,
+    // since this command is meaningless without whisper.
+    use minutes_core::live_autotune::{choose, Verdict};
+    use minutes_core::live_probe::{default_ladder, probe_cost, PROBE_LENGTHS};
+
+    let config = Config::load();
+    // Resolve the live model name the same way `live_transcript::run` will:
+    // explicit param > `config.live_transcript.model` > `config.transcription.model`
+    // (the "dictation" model, per LiveTranscriptConfig::model's doc — empty
+    // string means "use the dictation model") > "base" as a last resort.
+    let non_empty = |s: &str| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    };
+    let model_name = model
+        .as_deref()
+        .and_then(non_empty)
+        .or_else(|| non_empty(&config.live_transcript.model))
+        .or_else(|| non_empty(&config.transcription.model))
+        .unwrap_or_else(|| "base".to_string());
+    let backend = current_whisper_backend();
+
+    if let Some(cached) = read_probe_cache(&model_name, backend) {
+        return Ok(cached);
+    }
+
+    // Model files live under `transcription.model_path` (the global model dir,
+    // typically `~/.minutes/models`). `LiveTranscriptConfig` deliberately does
+    // not duplicate this path; the live engine reads from the same dir.
+    let model_path = config
+        .transcription
+        .model_path
+        .join(format!("ggml-{}.bin", model_name));
+    if !model_path.exists() {
+        return Err(format!(
+            "whisper model not found at {} — run `minutes setup --model {}` first",
+            model_path.display(),
+            model_name
+        ));
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4);
+    let use_gpu = whisper_backend_uses_gpu();
+
+    let model_path_for_probe = model_path.clone();
+    let (cost, points) = tauri::async_runtime::spawn_blocking(move || {
+        probe_cost(&model_path_for_probe, PROBE_LENGTHS, threads, use_gpu)
+    })
+    .await
+    .map_err(|e| format!("probe task join failed: {}", e))??;
+
+    let ladder = default_ladder();
+    let choice = choose(&cost, &ladder)
+        .ok_or_else(|| "live_autotune::choose returned None for default ladder".to_string())?;
+
+    let verdict_str = match choice.verdict {
+        Verdict::Ok => "Ok",
+        Verdict::Tight => "Tight",
+        Verdict::FallsBehind => "FallsBehind",
+    };
+    // Only suggest escalating *down* the model size, and only from base.
+    // Tiny is the smallest model we ship; if it still can't keep up the
+    // host is out of options and the panel should surface that verdict.
+    let escalate_to_tiny = !matches!(choice.verdict, Verdict::Ok) && model_name != "tiny";
+
+    let result = serde_json::json!({
+        "version": PROBE_CACHE_VERSION,
+        "model": model_name,
+        "backend": backend,
+        "use_gpu": use_gpu,
+        "threads": threads,
+        "cost": {
+            "overhead_ms": cost.overhead_secs * 1000.0,
+            "marginal_rtf": cost.marginal_rtf,
+        },
+        "points": points
+            .iter()
+            .map(|p| serde_json::json!({
+                "audio_secs": p.audio_secs,
+                "elapsed_ms": p.elapsed_secs * 1000.0,
+            }))
+            .collect::<Vec<_>>(),
+        "choice": {
+            "cap": choice.candidate.cap_secs,
+            "partials": choice.candidate.partial_interval_secs.is_some(),
+            "partialSecs": choice.candidate.partial_interval_secs,
+            "projected_load": choice.projected_load,
+            "verdict": verdict_str,
+        },
+        "escalate_to_tiny": escalate_to_tiny,
+        "measured_at": chrono::Local::now().to_rfc3339(),
+        "cached": false,
+    });
+
+    if let Err(err) = write_probe_cache(&model_name, backend, &result) {
+        tracing::warn!(error = %err, "failed to persist probe cache; result still returned");
+    }
+    Ok(result)
+}
 
 /// List saved Minutes Madness brackets with summary metadata for the desktop
 /// panel's selector.

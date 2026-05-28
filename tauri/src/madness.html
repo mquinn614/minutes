@@ -465,6 +465,16 @@
         case 'cmd_live_transcript_status':
           return { active: mockLiveStart > 0, line_count: mockLiveStart > 0 ? 3 : 0, duration_secs: mockLiveStart > 0 ? (Date.now() - mockLiveStart) / 1000 : 0, audioLevel: 0 };
         case 'cmd_start_live_transcript': mockLiveStart = Date.now(); return null;
+        case 'cmd_probe_live_config':
+          // Mock: pretend we're on a comfortable host so the panel exercises
+          // the snappiest config path during browser preview. Real backend
+          // returns full timing data; we only stub the fields the panel reads.
+          return {
+            version: 1, model: 'base', backend: 'cpu',
+            cost: { overhead_ms: 50, marginal_rtf: 0.02 },
+            choice: { cap: 5, partials: true, partialSecs: 2.5, projected_load: 0.1, verdict: 'Ok' },
+            escalate_to_tiny: false, cached: false,
+          };
         case 'cmd_stop_live_transcript': mockLiveStart = 0; return null;
         case 'cmd_needs_setup': return { hasModel: true, standalone_live: { ready: true } };
         case 'cmd_download_model': return 'ok';
@@ -1082,24 +1092,59 @@
         }
       } catch (e) { /* if the readiness check fails, fall through and try anyway */ }
       try {
-        // Live-transcription tuning, Madness-only (core live transcript untouched):
-        // - macOS (Metal GPU): partials on + 10s cap. Every ~1.5s we re-transcribe
-        //   the growing buffer so buzzwords flash within a second or two; the GPU
-        //   keeps up easily and the long cap keeps multi-word phrases intact.
-        // - Windows (CPU-only whisper build): partials OFF + short 3s cap. Each
-        //   partial re-transcribes the entire growing utterance buffer (cost is
-        //   O(buffer_len) per pass), and a CPU-only build can't sustain that — it
-        //   falls progressively behind AND the bounded audio queue overflows,
-        //   dropping spoken buzzwords entirely. Wider 2.5s/5s partials were still
-        //   extremely laggy in practice. Turning partials OFF means exactly one
-        //   transcription per utterance (the finalize); the 3s cap finalizes fast
-        //   so buzzwords surface in ~3-4s. Net: no backlog, no drops, roughly
-        //   real-time on CPU. (GPU Windows builds measure much faster — a future
-        //   auto-adapt step can lift this once per-host RTF is measured.)
-        const cpuBound = /Windows/i.test(navigator.userAgent || '');
-        const liveOpts = cpuBound
-          ? { cap: 3, partials: false }
-          : { cap: 10, partials: true, partialSecs: 1.5 };
+        // Live-transcription tuning is auto-picked per-host by
+        // `cmd_probe_live_config`: it times short whisper transcriptions on the
+        // current live model + backend, fits the cost model, and chooses the
+        // snappiest config whose projected sustained load stays under ~0.85x
+        // real time. Cached per (model, backend) at ~/.minutes/madness/ so
+        // repeat sessions skip the ~5-10s probe. If `base` can't keep up even
+        // finalize-only, the probe sets `escalate_to_tiny` so we re-probe with
+        // `tiny` and pass `model: "tiny"` through to override the live engine
+        // for this session only (config file untouched).
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.textContent = 'Calibrating live transcription…';
+        let probe;
+        try {
+          probe = await invoke('cmd_probe_live_config', {});
+        } catch (probeErr) {
+          // Probe failure (missing model is the realistic case; we already
+          // prompted to download base above) — fall back to the conservative
+          // shipped default. This keeps the panel usable even if calibration
+          // is unavailable.
+          console.warn('[madness] probe failed, using safe default:', probeErr);
+          probe = { choice: { cap: 3, partials: false, partialSecs: null, verdict: 'unknown' }, escalate_to_tiny: false };
+        }
+
+        // Escalate base → tiny when the picked config can't comfortably keep
+        // up on base. Only attempt if the probe asked for it (the Rust side
+        // already gates on "model was base AND verdict != Ok") and only adopt
+        // the tiny probe if it actually clears the line or projects a
+        // materially lighter load.
+        let modelOverride = undefined;
+        if (probe.escalate_to_tiny) {
+          try {
+            const tinyProbe = await invoke('cmd_probe_live_config', { model: 'tiny' });
+            const baseLoad = probe.choice && probe.choice.projected_load;
+            const tinyLoad = tinyProbe.choice && tinyProbe.choice.projected_load;
+            const tinyClears = tinyProbe.choice && tinyProbe.choice.verdict === 'Ok';
+            const tinyMuchLighter = typeof baseLoad === 'number' && typeof tinyLoad === 'number' && tinyLoad < baseLoad * 0.75;
+            if (tinyClears || tinyMuchLighter) {
+              probe = tinyProbe;
+              modelOverride = 'tiny';
+            }
+          } catch (tinyErr) {
+            // tiny not installed — stay on base with its non-Ok verdict.
+            console.warn('[madness] tiny probe unavailable, staying on base:', tinyErr);
+          }
+        }
+
+        const c = probe.choice || {};
+        const liveOpts = {
+          cap: Math.max(1, Math.round(c.cap || 3)),
+          partials: !!c.partials,
+        };
+        if (c.partials && typeof c.partialSecs === 'number') liveOpts.partialSecs = c.partialSecs;
+        if (modelOverride) liveOpts.model = modelOverride;
         await invoke('cmd_start_live_transcript', liveOpts);
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine; just attach to it.

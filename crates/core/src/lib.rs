@@ -83,6 +83,13 @@ pub mod dictation;
 #[cfg(all(feature = "streaming", feature = "whisper"))]
 pub mod live_transcript;
 
+// Runtime whisper RTF probe for the live-config auto-tuner (shares the demo
+// clip + ladder with the `whisper_rtf` benchmark example). Only `whisper` is
+// strictly required; the probe times raw whisper.cpp transcription, not the
+// streaming/VAD pipeline.
+#[cfg(feature = "whisper")]
+pub mod live_probe;
+
 // Native macOS hotkey monitoring via CGEventTap
 #[cfg(target_os = "macos")]
 pub mod hotkey_macos;

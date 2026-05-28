@@ -466,7 +466,7 @@ fn dispatch_action(
             Ok(ActionResponse::NoteAdded { line: added })
         }
         ActionId::StartLiveTranscript => {
-            cmd_start_live_transcript(app, state, None, None, None)?;
+            cmd_start_live_transcript(app, state, None, None, None, None)?;
             Ok(ActionResponse::Ok)
         }
         ActionId::StopLiveTranscript => {
