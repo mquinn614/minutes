@@ -155,6 +155,19 @@
       flex-shrink: 0;
       display: flex; gap: 16px; align-items: center;
     }
+    /* Auto-tune readout — same family + variable colors as .status, smaller,
+       quieter. Reuses --text-secondary per design system; no new accent. */
+    .tuning-info {
+      font-family: 'Geist Mono', monospace;
+      font-size: 10px;
+      color: var(--text-secondary);
+      padding: 0 20px 6px;
+      opacity: 0.7;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .tuning-info[hidden] { display: none; }
+    .tuning-info.calibrating { font-style: italic; opacity: 0.85; }
     .badge {
       font-family: 'Geist Mono', monospace; font-size: 10px;
       background: var(--accent-soft); color: var(--accent);
@@ -328,6 +341,13 @@
     <button id="celebrate-btn" title="Replay the champion celebration">🏆</button>
   </header>
   <div class="status" id="status">No brackets yet. Create one with <code>minutes madness new</code>.</div>
+  <!--
+    Readout of what cmd_probe_live_config picked for this host + backend.
+    Separate element from #status so renderStatus() doesn't clobber it: the
+    tuning info is a property of the host, not the current bracket, and
+    should persist across status changes once a session has been calibrated.
+  -->
+  <div class="tuning-info" id="tuning-info" hidden></div>
   <div class="recent-bar" id="recent-bar"></div>
   <div class="correction-toast" id="correction-toast"></div>
   <div class="audio-nudge" id="audio-nudge">
@@ -1077,6 +1097,48 @@
       }
     }
 
+    // Write a one-liner into the #tuning-info element describing what the
+    // auto-tuner picked. Called at three points in startRecording:
+    //   { state: 'calibrating' }                 — while cmd_probe_live_config runs
+    //   { state: 'tuned', probe, modelOverride } — after pick is finalized
+    //   { state: 'fallback', error }             — probe errored, panel using safe default
+    // Lives outside startRecording so the format logic is one place, easy to
+    // tweak when adding new probe fields without touching the call sites.
+    function setTuningInfo(opts) {
+      const el = document.getElementById('tuning-info');
+      if (!el) return;
+      el.classList.remove('calibrating');
+      if (!opts || !opts.state) { el.hidden = true; el.textContent = ''; return; }
+      if (opts.state === 'calibrating') {
+        el.classList.add('calibrating');
+        el.textContent = 'Calibrating live transcription…';
+        el.hidden = false;
+        return;
+      }
+      if (opts.state === 'fallback') {
+        el.textContent = 'Live tuning unavailable — using safe default (3s cap, no partials)';
+        el.hidden = false;
+        return;
+      }
+      // state === 'tuned'
+      const probe = opts.probe || {};
+      const c = probe.choice || {};
+      const model = opts.modelOverride || probe.model || 'base';
+      const backend = probe.backend || 'cpu';
+      const cadence = c.partials && typeof c.partialSecs === 'number'
+        ? 'partials every ' + c.partialSecs + 's'
+        : 'no partials';
+      const cap = (c.cap || 0) + 's cap';
+      const load = typeof c.projected_load === 'number'
+        ? ', load ' + c.projected_load.toFixed(2)
+        : '';
+      const verdict = c.verdict ? ', ' + c.verdict : '';
+      const cached = probe.cached ? ' (cached)' : '';
+      el.textContent = 'Tuned ' + model + ' on ' + backend + ' → '
+        + cadence + ', ' + cap + load + verdict + cached;
+      el.hidden = false;
+    }
+
     async function startRecording() {
       if (!current) return;
       // Pre-flight: live transcription uses its OWN speech model (base by
@@ -1101,8 +1163,7 @@
         // finalize-only, the probe sets `escalate_to_tiny` so we re-probe with
         // `tiny` and pass `model: "tiny"` through to override the live engine
         // for this session only (config file untouched).
-        const statusEl = document.getElementById('status');
-        if (statusEl) statusEl.textContent = 'Calibrating live transcription…';
+        setTuningInfo({ state: 'calibrating' });
         let probe;
         try {
           probe = await invoke('cmd_probe_live_config', {});
@@ -1113,6 +1174,7 @@
           // is unavailable.
           console.warn('[madness] probe failed, using safe default:', probeErr);
           probe = { choice: { cap: 3, partials: false, partialSecs: null, verdict: 'unknown' }, escalate_to_tiny: false };
+          setTuningInfo({ state: 'fallback', error: String(probeErr) });
         }
 
         // Escalate base → tiny when the picked config can't comfortably keep
@@ -1136,6 +1198,13 @@
             // tiny not installed — stay on base with its non-Ok verdict.
             console.warn('[madness] tiny probe unavailable, staying on base:', tinyErr);
           }
+        }
+
+        // Surface the picked config so non-technical hosts can read what was
+        // calibrated. Skipped on the fallback path (already wrote its own line
+        // in the catch block above), recognizable because verdict is "unknown".
+        if (probe.choice && probe.choice.verdict !== 'unknown') {
+          setTuningInfo({ state: 'tuned', probe, modelOverride });
         }
 
         const c = probe.choice || {};
