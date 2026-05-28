@@ -48,30 +48,48 @@ fn cleanup_before_process_exit(app: &tauri::AppHandle) {
 }
 
 fn exit_process_without_destructors(code: i32) -> ! {
-    // macOS + Linux + Windows all need the libc::_exit path, NOT
-    // std::process::exit. Rationale:
+    // Process-termination cascade by platform:
     //
-    // std::process::exit on Windows drains the C-runtime atexit chain
-    // before terminating. WebView2 + Tauri + tao register atexit handlers
-    // that try to coordinate with the event-loop thread. When called from
-    // our worker thread during tray Quit, those handlers wait on event-loop
-    // work that the still-running UI is currently servicing (subsequent tray
-    // clicks, etc.) — so exit blocks indefinitely. User-visible: window
-    // hides successfully, but the process keeps running, the tray icon
-    // stays, and Quit "does nothing" on every subsequent click.
+    // macOS / Linux: libc::_exit is sufficient. POSIX _exit terminates
+    // the process immediately without running atexit handlers, signal
+    // handlers, or stdio flushing.
     //
-    // libc::_exit bypasses the atexit chain entirely. It's the C99 "I am
-    // terminating immediately, do not pass go" syscall. Equivalent on
-    // Windows to calling kernel32::ExitProcess, which is what production
-    // WebView2 hosts ship for the same reason. WebView2 windows are
-    // already hidden by the time we get here (see `predrain_webview_windows`
-    // in `request_clean_exit`), so the COM teardown that the atexit chain
-    // would have run has already happened — skipping it just skips the
-    // pumping-loop dependency, not actual cleanup.
+    // Windows: libc::_exit is NOT sufficient. The MSVC C runtime's _exit
+    // skips atexit, but it still runs "quick C library termination" —
+    // which on Windows includes DLL_PROCESS_DETACH for every loaded DLL
+    // AND closing open file handles. WebView2's loaded DLLs hold handles
+    // (pipes / shared sections) to the msedgewebview2 child processes,
+    // and closing those handles waits on the children's RPC dispatch —
+    // which can be hung on the same race that caused us to want to exit
+    // in the first place. Net effect from real user testing: the worker
+    // thread reaches libc::_exit but the process never actually dies,
+    // it just becomes a half-alive zombie whose event loop is responsive
+    // but whose webview is locked. Show Minutes works, but the window
+    // freezes on interaction.
     //
-    // The function name was already aspirational ("without_destructors"
-    // suggested it skipped Drop) but on non-macOS it actually ran the full
-    // atexit chain. Now it actually lives up to the name on all platforms.
+    // The Windows answer is `kernel32::TerminateProcess(GetCurrentProcess(),
+    // code)` — the same syscall Task Manager → End Task uses. It does NOT
+    // unload DLLs cleanly. It does NOT close handles. It does not run
+    // DLL_PROCESS_DETACH. It just kills the process and every thread.
+    // This is the only call that survives a wedged WebView2 child.
+    //
+    // We've already hidden the webview windows in `predrain_webview_windows`
+    // before getting here, so WebView2's own cleanup has had a 200 ms window
+    // to run inside the still-pumping event loop. By the time TerminateProcess
+    // fires, anything that was going to succeed has succeeded; anything
+    // that was going to hang is what we're cutting through.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // GetCurrentProcess returns a pseudo-handle that doesn't need closing.
+        // Cast i32 → u32 because Windows exit codes are DWORD; negative codes
+        // wrap (intentional, matches MSVC convention).
+        TerminateProcess(GetCurrentProcess(), code as u32);
+    }
+
+    // POSIX path (macOS, Linux), and a belt-and-suspenders fallback on Windows
+    // if TerminateProcess somehow returned (per Microsoft docs it never does
+    // when called on the current process, but the BOOL signature is fallible).
     unsafe {
         libc::_exit(code);
     }

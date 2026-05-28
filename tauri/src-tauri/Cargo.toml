@@ -45,6 +45,13 @@ tracing = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Used only for `TerminateProcess(GetCurrentProcess(), code)` in the shutdown
+# path — workaround for WebView2 shutdown deadlock (see `request_clean_exit`).
+# Already in the transitive lock-file graph via Tauri / tao, so this adds no
+# binary size and pins us to the same major version they use.
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
