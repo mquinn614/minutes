@@ -1436,7 +1436,71 @@ fn spawn_meetings_refresh_watcher(app: &tauri::AppHandle, output_dir: std::path:
     });
 }
 
+/// Install a minimal `tracing` subscriber that captures ONLY the
+/// `minutes::shutdown` diagnostic target and appends it to the standard
+/// `~/.minutes/logs/minutes.log` file.
+///
+/// Why this exists: the Tauri menu-bar app historically installs NO
+/// tracing subscriber (see the comment at the top of `main`), so the
+/// `tracing::info!(target: "minutes::shutdown", …)` lines added to the
+/// quit lifecycle were being dropped on the floor — the diagnostic log
+/// came up empty, which reads as "the path was never reached" when in
+/// fact nothing was listening.
+///
+/// The filter is scoped to exactly `minutes::shutdown=trace` and nothing
+/// else, so the chatty whisper.cpp / ggml C-level loggers (targets
+/// `whisper_rs` / `ggml`, routed through tracing by
+/// `install_whisper_logging_hooks`) stay suppressed — they don't match
+/// this directive and the default level is off. No stderr flood, just the
+/// shutdown breadcrumbs.
+///
+/// GUI process has no console, so we write to a file, not stderr. ANSI is
+/// disabled so the log stays grep-friendly.
+fn install_shutdown_log_subscriber() {
+    use tracing_subscriber::EnvFilter;
+
+    // Ensure the directory exists before the writer tries to open the file.
+    let _ = minutes_core::logging::ensure_log_dir();
+    let log_path = minutes_core::logging::log_path();
+
+    let make_writer = move || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            // If the file can't be opened we fall back to sink (io::sink is
+            // not directly a File, so use a throwaway in a temp-less way):
+            // panic is worse than silence during shutdown, so swallow into
+            // a /dev/null-equivalent by reopening the same path; in practice
+            // ensure_log_dir above makes open succeed.
+            .unwrap_or_else(|_| {
+                // Last-resort: open NUL/null so the writer is valid. On
+                // Windows "NUL" is the bit bucket; on unix "/dev/null".
+                #[cfg(target_os = "windows")]
+                let null = "NUL";
+                #[cfg(not(target_os = "windows"))]
+                let null = "/dev/null";
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(null)
+                    .expect("open null sink for shutdown log")
+            })
+    };
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new("minutes::shutdown=trace"))
+        .with_writer(make_writer)
+        .with_ansi(false)
+        .try_init();
+}
+
 fn main() {
+    // Capture the shutdown-diagnostic breadcrumbs to minutes.log. Must run
+    // before `install_whisper_logging_hooks` so our subscriber is the global
+    // default; the whisper/ggml C logs route into it but are filtered out by
+    // the `minutes::shutdown=trace`-only directive.
+    install_shutdown_log_subscriber();
+
     // Route whisper.cpp + ggml C-level logs through Rust `tracing` so they
     // do not leak to raw stderr. The Tauri menu-bar app records audio in
     // process and runs the same VAD path the CLI does, so the
@@ -1445,12 +1509,15 @@ fn main() {
     // process-queue worker (`maybe_run_process_queue_worker`) reaches
     // `pipeline::transcribe_to_artifact` and spins up whisper contexts of
     // its own, so the worker subprocess needs the same routing or it
-    // floods stderr while a recording is processing. The Tauri app
-    // currently has no `tracing_subscriber` installed; tracing events
-    // with no subscriber are dropped, which is the silencing behavior we
-    // want for the chatty C INFO logs. If a future change wires a
-    // subscriber into this process, set `whisper_rs=warn` and `ggml=warn`
-    // in the filter or the flood returns.
+    // floods stderr while a recording is processing.
+    //
+    // NOTE: as of `install_shutdown_log_subscriber` above, the Tauri app
+    // now DOES have a tracing subscriber — but it is scoped to the
+    // `minutes::shutdown=trace` target only. The chatty whisper.cpp / ggml
+    // C INFO logs (targets `whisper_rs` / `ggml`) do not match that
+    // directive and default to off, so they remain suppressed: no stderr
+    // flood, no log spam. If the filter is ever broadened, demote
+    // `whisper_rs` and `ggml` to `warn` or the #163 flood returns.
     minutes_core::install_whisper_logging_hooks();
 
     #[cfg(target_os = "macos")]
