@@ -1,0 +1,133 @@
+name: Windows Vulkan Experiment
+
+# Experimental, manually-triggered build of the Windows desktop app with the
+# whisper.cpp Vulkan GPU backend (`--features parakeet,vulkan`). This is NOT a
+# release workflow — it has no tag trigger and never attaches to a GitHub
+# release. Its only job is to produce a downloadable artifact so the Minutes
+# Madness perf investigation can answer two questions on real Windows hardware
+# without anyone setting up the Vulkan SDK + MSVC + CMake locally:
+#   1. Ceiling: does a Vulkan GPU build make `base` whisper real-time for live
+#      buzzword scoring on a target host?
+#   2. Breadth: is a single Vulkan artifact viable for distribution — i.e. does
+#      it use the GPU when present AND fall back to CPU cleanly on a machine
+#      with no GPU / no Vulkan driver? (Run it on both kinds of host.)
+# See docs/madness-windows-perf-handoff.md ("GPU as an OPPORTUNISTIC
+# enhancement"). The shipped installer remains CPU-only (release-windows-desktop.yml).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI_VERSION: "2.10.1"
+
+jobs:
+  windows-vulkan:
+    name: Build Windows desktop installer (Vulkan GPU)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-vulkan-desktop-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Clean stale Windows native build cache
+        shell: bash
+        run: |
+          rm -rf \
+            target/debug/build/whisper-rs-sys-* \
+            target/release/build/whisper-rs-sys-* \
+            target/debug/build/knf-rs-sys-* \
+            target/release/build/knf-rs-sys-*
+
+      - name: Cache ONNX Runtime binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/dfbin
+          key: ${{ runner.os }}-ort-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Vulkan SDK (LunarG, full)
+        shell: pwsh
+        run: |
+          # The full LunarG SDK includes headers, loader, and glslc — GGML's
+          # Vulkan backend compiles its compute shaders with glslc at build time.
+          choco install vulkan-sdk -y --no-progress
+
+      - name: Export VULKAN_SDK for the build
+        shell: bash
+        run: |
+          # Chocolatey installs to C:\VulkanSDK\<version>\ and sets the env var
+          # machine-wide via setx, which is NOT visible to later steps in the
+          # same job. Resolve it explicitly and publish to $GITHUB_ENV so CMake
+          # (invoked by whisper-rs-sys) can find Vulkan, and glslc is on PATH.
+          sdk_root=$(find /c/VulkanSDK -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$sdk_root" ]; then
+            echo "Vulkan SDK not found under C:/VulkanSDK after install" >&2
+            exit 1
+          fi
+          win_root=$(cygpath -w "$sdk_root")
+          echo "VULKAN_SDK=$win_root" >> "$GITHUB_ENV"
+          echo "$sdk_root/Bin" >> "$GITHUB_PATH"
+          echo "Using VULKAN_SDK=$win_root"
+          "$sdk_root/Bin/glslc.exe" --version || true
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
+
+      - name: Build desktop installer (Vulkan, unsigned)
+        working-directory: tauri/src-tauri
+        run: cargo tauri build --features parakeet,vulkan --ci --bundles nsis --no-sign
+        env:
+          CARGO_NET_RETRY: 3
+          # Match the shipped CPU build's instruction ceiling so the CPU-fallback
+          # path in this Vulkan artifact behaves like the real installer on hosts
+          # with no usable GPU. The `vulkan` feature adds the GPU backend on top;
+          # whisper-rs-sys forwards these GGML_* vars straight into CMake.
+          GGML_NATIVE: "OFF"
+          GGML_AVX: "ON"
+          GGML_AVX2: "ON"
+          GGML_AVX512: "OFF"
+          GGML_AVX512_VBMI: "OFF"
+          GGML_AVX512_VNNI: "OFF"
+          GGML_AVX512_BF16: "OFF"
+
+      - name: Rename desktop binary
+        shell: bash
+        run: cp -f target/release/minutes-app.exe minutes-desktop-windows-x64-vulkan.exe
+
+      - name: Rename NSIS installer
+        shell: bash
+        run: |
+          mapfile -t installers < <(find target/release/bundle/nsis -maxdepth 1 -type f -name '*.exe' | sort)
+          if [ "${#installers[@]}" -eq 0 ]; then
+            echo "No NSIS installer .exe found under target/release/bundle/nsis" >&2
+            exit 1
+          fi
+          cp -f "${installers[0]}" minutes-desktop-windows-x64-vulkan-setup.exe
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minutes-desktop-windows-x64-vulkan
+          path: |
+            minutes-desktop-windows-x64-vulkan.exe
+            minutes-desktop-windows-x64-vulkan-setup.exe
+          if-no-files-found: error
