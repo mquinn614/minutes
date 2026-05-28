@@ -64,6 +64,28 @@ fn finish_clean_exit(app: tauri::AppHandle, code: i32) -> ! {
     exit_process_without_destructors(code);
 }
 
+/// Pre-exit step on Windows/Linux: hide every webview window before the
+/// terminal exit fires. This drives WebView2's COM teardown while the UI
+/// thread is still pumping messages, avoiding the canonical WebView2
+/// shutdown deadlock (MicrosoftEdge/WebView2Feedback#318): host UI
+/// thread waits on a worker thread that's making a cross-apartment COM
+/// call back into the UI thread, while the UI thread has already started
+/// teardown and stopped pumping — intermittent ~80% "white-grey not
+/// responding" hang on Windows 11 tray Quit.
+///
+/// Pattern documented at tauri-apps/tauri#14088 (open, status: upstream),
+/// discussion #4662 (app.exit doesn't drive a graceful event-loop shutdown),
+/// and the Hrechykhin writeup; the convergence in production WebView2
+/// hosts is "hide windows on UI thread → brief pump tick → exit on worker
+/// thread". Hidden, not closed: closing a Tauri window can fire
+/// CloseRequested handlers that race the exit.
+#[cfg(not(target_os = "macos"))]
+fn predrain_webview_windows(app: &tauri::AppHandle) {
+    for (_label, window) in app.webview_windows() {
+        let _ = window.hide();
+    }
+}
+
 fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
     if CLEAN_EXIT_STARTED.swap(true, Ordering::SeqCst) {
         return;
@@ -76,9 +98,18 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
             return;
         }
 
+        #[cfg(not(target_os = "macos"))]
+        predrain_webview_windows(app);
+
         let app_handle = app.clone();
         std::thread::spawn(move || {
             commands::wait_for_recording_shutdown_forever();
+            // Brief sleep gives the UI event loop time to process the
+            // window-hide messages and let WebView2 finish its
+            // cross-apartment COM calls before the terminal exit yanks
+            // the process out from under it. Below human perception.
+            #[cfg(not(target_os = "macos"))]
+            std::thread::sleep(std::time::Duration::from_millis(200));
             finish_clean_exit(app_handle, code);
         });
     } else {
@@ -90,24 +121,26 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
         // libc::_exit at the end skips atexit handlers, so there is no
         // event-loop-drain dependency.
         //
-        // Windows / Linux: this function is called *from inside* a Tauri
-        // UI callback (tray menu click or window close). Running the
-        // terminal path synchronously blocks the event loop thread on
-        // std::process::exit, which on Windows must drain CRT atexit
-        // handlers — and those handlers in turn try to drain the event
-        // loop. Result: deadlock, white-grey "Not Responding" overlay,
-        // user kills the app from Task Manager.
-        //
-        // Fix: defer to a worker thread so the UI callback returns
-        // immediately, the event loop drains its pending work, and the
-        // worker thread's exit call completes cleanly without circular
-        // dependency on the (now-idle) event loop.
+        // Windows / Linux: tray Quit and window close fire this function
+        // from inside a Tauri UI callback. Two failure modes we have to
+        // dodge: (1) std::process::exit drains CRT atexit handlers that
+        // try to drain the event loop the callback is blocking; (2) even
+        // after deferring to a worker thread, WebView2's cross-apartment
+        // COM teardown can deadlock against a UI thread that has stopped
+        // pumping messages (WebView2Feedback#318, ~80% repro). Fix is
+        // three layers: hide windows on the UI thread (kicks off WebView2
+        // teardown while the pump is alive), defer the terminal exit to a
+        // worker thread (so the callback returns and the pump keeps
+        // running), and brief sleep before exit (so the hide messages get
+        // processed before we yank the process).
         #[cfg(target_os = "macos")]
         finish_clean_exit(app.clone(), code);
         #[cfg(not(target_os = "macos"))]
         {
+            predrain_webview_windows(app);
             let app_handle = app.clone();
             std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
                 finish_clean_exit(app_handle, code);
             });
         }
