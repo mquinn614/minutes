@@ -959,13 +959,28 @@
       let pending = null;       // { row, startX, startY, pointerId }
       let dragging = null;
 
+      // Suppress text selection across rows while a press is active. This is
+      // why dragging from a textbox no longer paints a highlight trail across
+      // every input it crosses. We re-enable on pointerup so editing (caret
+      // positioning, double-click word select, etc.) still works normally
+      // between presses.
+      const suppressSelection = () => {
+        wrap.style.userSelect = 'none';
+        wrap.style.webkitUserSelect = 'none';
+      };
+      const restoreSelection = () => {
+        wrap.style.userSelect = '';
+        wrap.style.webkitUserSelect = '';
+      };
+
       const commitDrag = () => {
         if (!pending || dragging) return;
         dragging = pending.row;
         dragging.classList.add('dragging');
         try { wrap.setPointerCapture(pending.pointerId); } catch (_) {}
-        // Once drag commits from inside an input, blur it so the row move
-        // doesn't leave a stranded text caret behind.
+        // If the drag committed from inside an input (user pressed there, then
+        // dragged), they wanted to reorder — blur the input so the move doesn't
+        // leave a stranded caret behind.
         if (document.activeElement && document.activeElement.tagName === 'INPUT') {
           document.activeElement.blur();
         }
@@ -977,21 +992,24 @@
         if (!row) return;
         if (e.target.closest('.bw-x')) return; // ✕ stays a click target
         pending = { row, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+        suppressSelection();
         if (e.target.closest('.bw-grip')) {
-          // Grip: commit immediately and block focus changes.
-          e.preventDefault();
+          // Grip: commit immediately. No preventDefault needed — grip is a
+          // <span> with no default action, and user-select:none on the wrap
+          // already keeps anything else from happening.
           commitDrag();
         }
-        // From input/row body: do NOT preventDefault — let the native click
-        // focus the input. We upgrade to a drag only if the user actually drags.
+        // From input/row body: do NOT preventDefault — let the native
+        // pointerdown focus the input and place the caret at click position.
+        // Drag upgrades on motion threshold; if it's just a click,
+        // selection-suppression ends on pointerup with no visible effect.
       });
 
       wrap.addEventListener('pointermove', (e) => {
         if (!dragging && pending && pending.pointerId === e.pointerId) {
           const dy = e.clientY - pending.startY;
           const dx = e.clientX - pending.startX;
-          // Require vertical-dominant motion past the threshold so horizontal
-          // text-selection inside the input doesn't accidentally start a drag.
+          // Vertical-dominant motion past the threshold = drag intent.
           if (Math.abs(dy) > DRAG_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
             commitDrag();
           } else {
@@ -1009,6 +1027,7 @@
 
       const endDrag = () => {
         pending = null;
+        restoreSelection();
         if (!dragging) return;
         dragging.classList.remove('dragging');
         dragging = null;
