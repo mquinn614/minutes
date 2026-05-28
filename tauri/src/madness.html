@@ -1189,6 +1189,17 @@
       const el = document.getElementById('tuning-info');
       if (!el) return;
       el.classList.remove('calibrating');
+      // Always wire the debug click — clicking the tuning chip toggles the
+      // CPU safety-floor bypass and reloads. Cheap to attach; idempotent.
+      el.style.cursor = 'pointer';
+      el.title = 'Click to toggle CPU safety floor (debug). Reload after toggling.';
+      el.onclick = () => {
+        try {
+          const on = localStorage.getItem('madness.skipCpuFloor') === '1';
+          localStorage.setItem('madness.skipCpuFloor', on ? '0' : '1');
+          window.location.reload();
+        } catch (_) {}
+      };
       if (!opts || !opts.state) { el.hidden = true; el.textContent = ''; return; }
       if (opts.state === 'calibrating') {
         el.classList.add('calibrating');
@@ -1290,7 +1301,17 @@
         // one whisper call per utterance, ~5s flash latency, no backlog. GPU
         // backends (vulkan/cuda/metal/coreml/hipblas) keep the tuner's pick —
         // per-call overhead there is negligible.
-        if (probe.backend === 'cpu' && probe.choice) {
+        //
+        // Debug bypass: setting localStorage `madness.skipCpuFloor` to "1"
+        // skips the floor so the auto-tuner's organic pick is honored. Use
+        // this on a host where the no-partials path is suspected of a defect
+        // (since the floor was added without end-to-end validation on this
+        // configuration) and you want to compare against partials-on.
+        let skipCpuFloor = false;
+        try {
+          skipCpuFloor = localStorage.getItem('madness.skipCpuFloor') === '1';
+        } catch (_) {}
+        if (probe.backend === 'cpu' && probe.choice && !skipCpuFloor) {
           probe.choice = {
             cap: 5,
             partials: false,
@@ -1298,6 +1319,10 @@
             projected_load: null,
             verdict: 'CPU safety floor',
           };
+        } else if (skipCpuFloor && probe.backend === 'cpu' && probe.choice) {
+          // Annotate the verdict so the panel info chip shows the bypass is
+          // active — easy to spot if it gets forgotten between sessions.
+          probe.choice.verdict = (probe.choice.verdict || 'tuner pick') + ' · floor bypassed';
         }
 
         // Surface the picked config so non-technical hosts can read what was
