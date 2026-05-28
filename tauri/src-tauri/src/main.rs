@@ -2311,32 +2311,10 @@ fn main() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
-                    // Platform-divergent close semantics:
-                    //
-                    // On macOS this is a tray/menu-bar app — closing the window
-                    // hides it; the user expects Cmd+Q or the menu bar's Quit
-                    // to actually exit. PTY session persists; reopen restores
-                    // the in-flight workspace.
-                    //
-                    // On Windows / Linux the convention is "close the window =
-                    // exit the app". Right-click → Close on the taskbar and
-                    // clicking the [×] both fire CloseRequested; if we hide
-                    // instead, the process lingers in memory with no obvious
-                    // way to exit (Madness drops the inherited File menu so
-                    // there's no File → Exit either) and the user is forced
-                    // to End Process from Task Manager. Route the close
-                    // through `request_clean_exit` so any in-flight recording
-                    // stops cleanly first.
-                    #[cfg(target_os = "macos")]
-                    {
-                        api.prevent_close();
-                        window.hide().ok();
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = api; // suppress unused warning on non-macOS
-                        request_clean_exit(&window.app_handle().clone(), 0);
-                    }
+                    // Hide main window on close instead of quitting (app stays in tray)
+                    // PTY session persists — user can reopen and resume where they left off
+                    api.prevent_close();
+                    window.hide().ok();
                 }
                 tauri::WindowEvent::Focused(false) if window.label() == "palette" => {
                     let app_handle = window.app_handle().clone();
