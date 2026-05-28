@@ -194,8 +194,22 @@ impl AudioStream {
         let host = crate::capture::cached_default_host();
         let device = crate::capture::select_input_device(host, device_override)?;
 
-        // Bounded channel: 64 chunks = ~6.4 seconds of buffered audio.
-        let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = bounded(64);
+        // Bounded channel: 512 chunks = ~51.2 seconds of buffered audio.
+        //
+        // Widened from 64 (6.4s) after discovering that on slow-CPU hosts a cold
+        // whisper finalize can block the live-transcript consumer thread for
+        // 5–10s, and even warm steady-state finalize can briefly outpace audio
+        // capture. With 6.4s of headroom the channel overflowed silently and
+        // dropped 100ms chunks of speech mid-utterance (buzzwords vanished, not
+        // delayed). 51.2s is enough to absorb cold start + several seconds of
+        // backlog while we measure real RTF in the wild via MINUTES_LIVE_TIMING
+        // and decide if the cost model needs calibration / a smaller model.
+        //
+        // This is a "no audio is lost" buffer, not a "real time" guarantee — if
+        // sustained RTF > 1.0 the buffer still fills, but `record_dropped_chunk`
+        // now fires only when whisper is genuinely unable to keep up, not when
+        // a single slow call momentarily stalls the consumer.
+        let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = bounded(512);
 
         let stop = Arc::new(AtomicBool::new(false));
         let err_flag = Arc::new(AtomicBool::new(false));
@@ -295,7 +309,9 @@ impl MultiAudioStream {
         let voice = AudioStream::start(voice_device)?;
         let call = AudioStream::start(Some(call_device))?;
 
-        let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = bounded(128);
+        // Multi-source merge channel: 512 chunks for parity with single-source
+        // AudioStream (see Madness audio-drop note above).
+        let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = bounded(512);
         let stop = Arc::new(AtomicBool::new(false));
 
         let voice_rx = voice.receiver.clone();
