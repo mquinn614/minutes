@@ -942,27 +942,62 @@
       attachBwDragReorder(wrap);
     }
 
-    // Pointer-events drag-to-reorder. HTML5 native drag-and-drop (`draggable=true`
-    // + dragstart/dragover) is unreliable in macOS WKWebView and Tauri WebViews
-    // generally; pointer events work everywhere. Wired once per wrap (idempotent)
-    // since the wrap element survives renderBwRows re-renders — only innerHTML
-    // changes, so we don't need to re-attach listeners.
+    // Pointer-events drag-to-reorder. HTML5 native drag-and-drop is unreliable
+    // in macOS WKWebView; pointer events work everywhere. Wired once per wrap.
+    //
+    // Drag-start surfaces:
+    //   ⠿ grip → instant drag (preventDefault — no focus change).
+    //   input / row body → "lazy" drag: a plain click focuses the input as
+    //     normal; the press upgrades to a drag only if the pointer moves past
+    //     DRAG_THRESHOLD vertically before pointerup. Lets the user grab any
+    //     row from the textbox without losing click-to-edit.
+    //   ✕ → never drag; its click handler clears the input.
     function attachBwDragReorder(wrap) {
       if (wrap.dataset.dragWired === '1') return;
       wrap.dataset.dragWired = '1';
+      const DRAG_THRESHOLD = 6; // px of vertical motion before a click-on-input becomes a drag
+      let pending = null;       // { row, startX, startY, pointerId }
       let dragging = null;
+
+      const commitDrag = () => {
+        if (!pending || dragging) return;
+        dragging = pending.row;
+        dragging.classList.add('dragging');
+        try { wrap.setPointerCapture(pending.pointerId); } catch (_) {}
+        // Once drag commits from inside an input, blur it so the row move
+        // doesn't leave a stranded text caret behind.
+        if (document.activeElement && document.activeElement.tagName === 'INPUT') {
+          document.activeElement.blur();
+        }
+      };
+
       wrap.addEventListener('pointerdown', (e) => {
-        // Drag starts only from the ⠿ grip — leaves the input/✕ clickable.
-        const grip = e.target.closest && e.target.closest('.bw-grip');
-        if (!grip) return;
-        const row = grip.closest('.bw-row');
+        if (e.button !== 0) return; // primary button only
+        const row = e.target.closest && e.target.closest('.bw-row');
         if (!row) return;
-        e.preventDefault();
-        dragging = row;
-        row.classList.add('dragging');
-        try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+        if (e.target.closest('.bw-x')) return; // ✕ stays a click target
+        pending = { row, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+        if (e.target.closest('.bw-grip')) {
+          // Grip: commit immediately and block focus changes.
+          e.preventDefault();
+          commitDrag();
+        }
+        // From input/row body: do NOT preventDefault — let the native click
+        // focus the input. We upgrade to a drag only if the user actually drags.
       });
+
       wrap.addEventListener('pointermove', (e) => {
+        if (!dragging && pending && pending.pointerId === e.pointerId) {
+          const dy = e.clientY - pending.startY;
+          const dx = e.clientX - pending.startX;
+          // Require vertical-dominant motion past the threshold so horizontal
+          // text-selection inside the input doesn't accidentally start a drag.
+          if (Math.abs(dy) > DRAG_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
+            commitDrag();
+          } else {
+            return;
+          }
+        }
         if (!dragging) return;
         const els = document.elementsFromPoint(e.clientX, e.clientY);
         const target = els.find((el) => el && el.classList && el.classList.contains('bw-row') && el !== dragging);
@@ -971,7 +1006,9 @@
         const after = (e.clientY - r.top) > r.height / 2;
         wrap.insertBefore(dragging, after ? target.nextSibling : target);
       });
+
       const endDrag = () => {
+        pending = null;
         if (!dragging) return;
         dragging.classList.remove('dragging');
         dragging = null;
