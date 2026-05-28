@@ -242,8 +242,36 @@ impl PtyManager {
         if let Some(mut session) = self.sessions.remove(session_id) {
             session.child.kill().ok();
             if let Some(handle) = session.reader_handle.take() {
-                // Don't block forever waiting for reader thread
-                let _ = handle.join();
+                // ROOT CAUSE of the Windows quit hang (diagnosed via
+                // minutes::shutdown trace, 2026-05-28): the reader thread
+                // (see `spawn` above) blocks on `reader.read()` of the PTY
+                // master and only breaks on EOF / error. On Windows ConPTY,
+                // killing the child process does NOT deliver EOF to the
+                // master — the pseudoconsole keeps the pipe open — so the
+                // read never returns and the thread never exits. The old
+                // unconditional `handle.join()` here then blocked FOREVER,
+                // wedging `cleanup_before_process_exit` and every app-quit
+                // path behind it. (On macOS/Unix killing the child closes
+                // the slave, the master read gets EOF, the thread exits, and
+                // join returns instantly — which is why this never repro'd
+                // on the Mac.) The old comment "Don't block forever" was
+                // aspirational; the code did exactly that.
+                //
+                // Fix: bounded wait. Give the reader a brief window to exit
+                // cleanly (it will, on platforms that deliver EOF), then
+                // detach. A detached reader thread is harmless — it holds no
+                // lock the rest of the app needs, and it dies with the
+                // process on exit. Shutdown can never wedge on it again.
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(300);
+                while !handle.is_finished() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if handle.is_finished() {
+                    let _ = handle.join();
+                }
+                // else: intentionally drop the handle without joining — never
+                // block on a ConPTY reader that won't see EOF.
             }
             Some(session.context_dir)
         } else {
