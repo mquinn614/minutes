@@ -82,7 +82,35 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
             finish_clean_exit(app_handle, code);
         });
     } else {
+        // Platform-specific shutdown dispatch:
+        //
+        // macOS: the AppKit `applicationShouldTerminate` hook returns
+        // NSTerminateCancel and the surrounding runtime keeps draining
+        // events while `finish_clean_exit` runs synchronously here. The
+        // libc::_exit at the end skips atexit handlers, so there is no
+        // event-loop-drain dependency.
+        //
+        // Windows / Linux: this function is called *from inside* a Tauri
+        // UI callback (tray menu click or window close). Running the
+        // terminal path synchronously blocks the event loop thread on
+        // std::process::exit, which on Windows must drain CRT atexit
+        // handlers — and those handlers in turn try to drain the event
+        // loop. Result: deadlock, white-grey "Not Responding" overlay,
+        // user kills the app from Task Manager.
+        //
+        // Fix: defer to a worker thread so the UI callback returns
+        // immediately, the event loop drains its pending work, and the
+        // worker thread's exit call completes cleanly without circular
+        // dependency on the (now-idle) event loop.
+        #[cfg(target_os = "macos")]
         finish_clean_exit(app.clone(), code);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                finish_clean_exit(app_handle, code);
+            });
+        }
     }
 }
 
