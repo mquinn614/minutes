@@ -926,51 +926,59 @@
 
     function renderBwRows(lines) {
       const wrap = document.getElementById('bw-rows');
-      // draggable="false" on the input so its native text-drag doesn't swallow
-      // the row drag (in strict WebViews the row drag never fires otherwise).
       wrap.innerHTML = lines.map((line, i) => `
-        <div class="bw-row" draggable="true" data-i="${i}">
+        <div class="bw-row" data-i="${i}">
           <span class="bw-grip" title="Drag to reseed">⠿</span>
           <span class="bw-seed">${i + 1}.</span>
-          <input type="text" draggable="false" value="${String(line).replace(/"/g, '&quot;')}" placeholder="buzzword" />
+          <input type="text" value="${String(line).replace(/"/g, '&quot;')}" placeholder="buzzword" />
           <span class="bw-x" title="Clear this slot">✕</span>
         </div>`).join('');
-      let dragEl = null;
-      wrap.querySelectorAll('.bw-row').forEach((row) => {
-        row.addEventListener('dragstart', (e) => {
-          dragEl = row;
-          row.classList.add('dragging');
-          // Required by WKWebView / WebView2: a dragstart without setData is
-          // silently cancelled, so drag-to-reorder never starts in the app
-          // (it worked in a plain browser, hence the easy miss).
-          if (e.dataTransfer) {
-            try { e.dataTransfer.setData('text/plain', row.dataset.i || ''); } catch (_) {}
-            e.dataTransfer.effectAllowed = 'move';
-          }
-        });
-        row.addEventListener('dragend', () => {
-          row.classList.remove('dragging');
-          wrap.querySelectorAll('.bw-row').forEach((r) => r.classList.remove('dragover'));
-          renumberBwRows();
-        });
-        row.addEventListener('dragover', (e) => {
-          e.preventDefault();
-          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-          if (!dragEl || dragEl === row) return;
-          const r = row.getBoundingClientRect();
-          const after = (e.clientY - r.top) > r.height / 2;
-          wrap.querySelectorAll('.bw-row').forEach((x) => x.classList.remove('dragover'));
-          row.classList.add('dragover');
-          wrap.insertBefore(dragEl, after ? row.nextSibling : row);
-        });
-        row.querySelector('.bw-x').addEventListener('click', () => {
-          const input = row.querySelector('input'); input.value = ''; input.focus();
+      wrap.querySelectorAll('.bw-row .bw-x').forEach((x) => {
+        x.addEventListener('click', () => {
+          const input = x.closest('.bw-row').querySelector('input');
+          input.value = ''; input.focus();
         });
       });
-      // A drop handler that preventDefaults is required on the container in
-      // some WebViews for the drop to actually be accepted (no-op otherwise —
-      // the dragover insertBefore already did the rearrangement).
-      wrap.addEventListener('drop', (e) => { e.preventDefault(); });
+      attachBwDragReorder(wrap);
+    }
+
+    // Pointer-events drag-to-reorder. HTML5 native drag-and-drop (`draggable=true`
+    // + dragstart/dragover) is unreliable in macOS WKWebView and Tauri WebViews
+    // generally; pointer events work everywhere. Wired once per wrap (idempotent)
+    // since the wrap element survives renderBwRows re-renders — only innerHTML
+    // changes, so we don't need to re-attach listeners.
+    function attachBwDragReorder(wrap) {
+      if (wrap.dataset.dragWired === '1') return;
+      wrap.dataset.dragWired = '1';
+      let dragging = null;
+      wrap.addEventListener('pointerdown', (e) => {
+        // Drag starts only from the ⠿ grip — leaves the input/✕ clickable.
+        const grip = e.target.closest && e.target.closest('.bw-grip');
+        if (!grip) return;
+        const row = grip.closest('.bw-row');
+        if (!row) return;
+        e.preventDefault();
+        dragging = row;
+        row.classList.add('dragging');
+        try { wrap.setPointerCapture(e.pointerId); } catch (_) {}
+      });
+      wrap.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const els = document.elementsFromPoint(e.clientX, e.clientY);
+        const target = els.find((el) => el && el.classList && el.classList.contains('bw-row') && el !== dragging);
+        if (!target) return;
+        const r = target.getBoundingClientRect();
+        const after = (e.clientY - r.top) > r.height / 2;
+        wrap.insertBefore(dragging, after ? target.nextSibling : target);
+      });
+      const endDrag = () => {
+        if (!dragging) return;
+        dragging.classList.remove('dragging');
+        dragging = null;
+        renumberBwRows();
+      };
+      wrap.addEventListener('pointerup', endDrag);
+      wrap.addEventListener('pointercancel', endDrag);
     }
     function renumberBwRows() {
       [...document.querySelectorAll('#bw-rows .bw-row')].forEach((row, i) => {
