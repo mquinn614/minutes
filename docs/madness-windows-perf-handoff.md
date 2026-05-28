@@ -85,6 +85,28 @@ under 1.0. That picks the CPU baseline; the GPU runs show the ceiling.
 Also cross-check live: watch `~/.minutes/events.jsonl` `live.utterance.final`
 `offset_ms` vs wall-clock during a real Madness recording to see backlog grow.
 
+### Measured on the PC (2026-05-28) — model validated; this host is fast, not weak
+First on-target run. **Intel i7-14700KF (28 threads) + RTX 4070 SUPER**, `base`
+model only installed.
+- **CPU baseline:** per-call overhead ~1.8s, marginal ~0.04x. Projected load:
+  1.5s/10s = **1.47 FALLS BEHIND**; 2.5s/5s = 0.80 OK; 3s/6s = 0.68; no-partials/3s
+  = 0.66; no-partials/5s = 0.41. (Cold first run nudges 2.5s/5s to 0.86 TIGHT.)
+- **Vulkan (RTX 4070 SUPER):** everything ~0.02–0.08 — even 1.5s/10s is trivial.
+- **Validation:** the projection correctly flags the one config known to fail in
+  the field (1.5s/10s → 1.47), so `live_autotune`'s math tracks reality. Snappiest
+  passing `base` config here is 2.5s/5s; no `tiny` escalation needed; GPU clears
+  everything.
+- **Key insight:** on CPU the ~1.8s fixed per-call overhead dominates (marginal
+  only ~0.04x) → call FREQUENCY, not buffer length, is the cost. Fewer whisper
+  calls (finalize-only, or long partial intervals) is the CPU lever; a GPU can
+  call as often as it likes.
+- **CAVEAT — do NOT ground fleet defaults on these numbers.** This i7+4070 is a
+  fast/GPU host, not the weak CPU-only laptop the fix targets, and it does NOT
+  reproduce the reported lag (2.5s/5s measures 0.80 here, yet was "extremely
+  laggy" in the field — so the laggy box is slower than this, or the lag had
+  another cause). Keep the shipped conservative default (no-partials/3s, 0.66) as
+  the floor; a genuinely weak laptop is still the grounding run we need.
+
 ## PRIMARY GOAL: a CPU baseline that works on a typical/weak host
 This must work for everyone (see Distribution target). Decide from the measured
 real-time factor on this PC (and remember other hosts may be slower):
@@ -103,14 +125,38 @@ real-time factor on this PC (and remember other hosts may be slower):
     now uses it so the benchmark table and the future auto-tuner share one source
     of truth. Verifiable off-target: `cargo test -p minutes-core
     --no-default-features live_autotune`.
-  - **Deferred until the PC produces one `whisper_rtf` run** (don't wire blind —
-    that run confirms projection tracks reality on the target; the doc already
-    notes this PC ran slower than the batch estimate): a `cmd_probe_live_config`
-    Tauri command that loads the live model, times ~5 buffers on the embedded
-    demo clip, calls `live_autotune`, and returns the chosen knobs; panel calls it
-    once before `startRecording` and caches the result per (model, backend) in
-    `~/.minutes/madness/`; plus an additive optional `model` param on
-    `cmd_start_live_transcript` so the picker can escalate `base → tiny`.
+  - **Landed (full per-host runtime probe, shipped):** `cmd_probe_live_config`
+    (`crates/core/src/live_probe.rs` + `tauri/src-tauri/src/commands.rs`) loads
+    the resolved live model, times short whisper transcriptions on the bundled
+    demo clip, fits a `live_autotune::CostModel`, and calls `choose` against
+    `default_ladder()` (shared with `whisper_rtf` so benchmark and runtime pick
+    from one table). Result `{cap, partials, partialSecs, projected_load,
+    verdict, escalate_to_tiny}` is cached at
+    `~/.minutes/madness/probe-{model}-{backend}.json` (7-day TTL, version tag);
+    backend key derived from `cfg!(feature = ...)` so vulkan and cpu builds keep
+    separate caches. `cmd_start_live_transcript` gained an additive
+    `Option<String> model` param so the panel can escalate `base → tiny` for
+    this session only (config untouched, CLI/Live mode unaffected).
+    `madness.html` `startRecording` calls the probe, surfaces a
+    `Calibrating live transcription…` state, and degrades to the conservative
+    `{cap:3, partials:false}` if the probe errors (e.g. missing model).
+    Supersedes the earlier compile-time backend-detect (`cmd_live_compute_backend`,
+    now removed): the probe captures the real per-call cost including
+    `create_state` overhead that the synthetic benchmark omits, so the picked
+    config reflects what whisper actually sustains, not what cargo features were
+    compiled in.
+    Caveat: the auto-tuner is still only end-to-end validated on the fast
+    i7-14700KF + RTX 4070 SUPER (it picks `partials 2.5s + 5s cap`, projected
+    load ~0.80). Exercise on a representative weak work-laptop before shipping
+    to the All-Hands fleet — that's the host the doc's "extremely laggy"
+    premise targets.
+  - **Companion diagnostic (env-gated, shipped):** `MINUTES_LIVE_TIMING=1`
+    enables a no-op-by-default logger (`crates/core/src/live_timing.rs`) that
+    appends per-utterance real cost (audio secs vs wall-clock incl.
+    `create_state`, RTF, cumulative dropped audio chunks) to
+    `~/.minutes/live-timing.log`. Cheap way to confirm the probe's picks hold up
+    in a real session — especially the dropped-chunks counter, which is the
+    "audio is actually being lost" signal independent of any projection.
 
 ## GPU as an OPPORTUNISTIC enhancement (data point on this PC; not the baseline)
 The cuda/vulkan feature flags are ALREADY wired (`crates/core/Cargo.toml`:

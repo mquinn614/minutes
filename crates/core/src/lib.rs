@@ -90,6 +90,9 @@ pub mod live_transcript;
 #[cfg(feature = "whisper")]
 pub mod live_probe;
 
+// Opt-in live-perf timing logger (env MINUTES_LIVE_TIMING). Temporary diagnostic.
+pub mod live_timing;
+
 // Native macOS hotkey monitoring via CGEventTap
 #[cfg(target_os = "macos")]
 pub mod hotkey_macos;
