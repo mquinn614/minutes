@@ -85,6 +85,28 @@ under 1.0. That picks the CPU baseline; the GPU runs show the ceiling.
 Also cross-check live: watch `~/.minutes/events.jsonl` `live.utterance.final`
 `offset_ms` vs wall-clock during a real Madness recording to see backlog grow.
 
+### Measured on the PC (2026-05-28) — model validated; this host is fast, not weak
+First on-target run. **Intel i7-14700KF (28 threads) + RTX 4070 SUPER**, `base`
+model only installed.
+- **CPU baseline:** per-call overhead ~1.8s, marginal ~0.04x. Projected load:
+  1.5s/10s = **1.47 FALLS BEHIND**; 2.5s/5s = 0.80 OK; 3s/6s = 0.68; no-partials/3s
+  = 0.66; no-partials/5s = 0.41. (Cold first run nudges 2.5s/5s to 0.86 TIGHT.)
+- **Vulkan (RTX 4070 SUPER):** everything ~0.02–0.08 — even 1.5s/10s is trivial.
+- **Validation:** the projection correctly flags the one config known to fail in
+  the field (1.5s/10s → 1.47), so `live_autotune`'s math tracks reality. Snappiest
+  passing `base` config here is 2.5s/5s; no `tiny` escalation needed; GPU clears
+  everything.
+- **Key insight:** on CPU the ~1.8s fixed per-call overhead dominates (marginal
+  only ~0.04x) → call FREQUENCY, not buffer length, is the cost. Fewer whisper
+  calls (finalize-only, or long partial intervals) is the CPU lever; a GPU can
+  call as often as it likes.
+- **CAVEAT — do NOT ground fleet defaults on these numbers.** This i7+4070 is a
+  fast/GPU host, not the weak CPU-only laptop the fix targets, and it does NOT
+  reproduce the reported lag (2.5s/5s measures 0.80 here, yet was "extremely
+  laggy" in the field — so the laggy box is slower than this, or the lag had
+  another cause). Keep the shipped conservative default (no-partials/3s, 0.66) as
+  the floor; a genuinely weak laptop is still the grounding run we need.
+
 ## PRIMARY GOAL: a CPU baseline that works on a typical/weak host
 This must work for everyone (see Distribution target). Decide from the measured
 real-time factor on this PC (and remember other hosts may be slower):
