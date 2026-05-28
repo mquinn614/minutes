@@ -697,20 +697,14 @@ fn transcribe_parakeet_dispatch(
 /// Build `WhisperContextParameters` with GPU explicitly enabled when a GPU
 /// backend was compiled in. All call sites should use this instead of
 /// `WhisperContextParameters::default()`.
-#[cfg(feature = "whisper")]
-pub(crate) fn whisper_context_params() -> whisper_rs::WhisperContextParameters<'static> {
-    let mut params = whisper_rs::WhisperContextParameters::default();
-
-    let gpu_compiled = cfg!(any(
-        feature = "coreml",
-        feature = "cuda",
-        feature = "hipblas",
-        feature = "metal",
-        feature = "vulkan",
-    ));
-    params.use_gpu = gpu_compiled;
-
-    let backend = if cfg!(feature = "metal") {
+/// The whisper compute backend compiled into this build, as a short tag:
+/// `"metal"`, `"cuda"`, `"coreml"`, `"hipblas"`, `"vulkan"`, or `"cpu"`.
+///
+/// Compile-time only — it reflects the cargo features the binary was built with,
+/// not a runtime device probe. A `vulkan` build still reports `"vulkan"` on a
+/// host with no GPU (whisper.cpp then falls back to CPU at runtime).
+pub fn whisper_backend() -> &'static str {
+    if cfg!(feature = "metal") {
         "metal"
     } else if cfg!(feature = "cuda") {
         "cuda"
@@ -722,10 +716,26 @@ pub(crate) fn whisper_context_params() -> whisper_rs::WhisperContextParameters<'
         "vulkan"
     } else {
         "cpu"
-    };
+    }
+}
+
+/// Whether a GPU whisper backend is compiled in (anything other than `"cpu"`).
+///
+/// Used to pick live-transcription cadence: a GPU build sustains frequent
+/// partial re-transcriptions, a CPU-only build does not (see the Madness panel).
+pub fn whisper_gpu_compiled() -> bool {
+    whisper_backend() != "cpu"
+}
+
+#[cfg(feature = "whisper")]
+pub(crate) fn whisper_context_params() -> whisper_rs::WhisperContextParameters<'static> {
+    let mut params = whisper_rs::WhisperContextParameters::default();
+
+    params.use_gpu = whisper_gpu_compiled();
+
     tracing::debug!(
-        use_gpu = gpu_compiled,
-        backend = backend,
+        use_gpu = params.use_gpu,
+        backend = whisper_backend(),
         "whisper context params"
     );
 

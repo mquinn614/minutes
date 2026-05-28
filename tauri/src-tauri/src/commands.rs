@@ -11414,6 +11414,18 @@ fn try_acquire_live(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Report the whisper compute backend this build was compiled with, so the UI
+/// can pick a live-transcription cadence that the hardware can sustain. A GPU
+/// backend re-transcribes growing partial buffers cheaply; a CPU-only build
+/// cannot, so the Madness panel drops to finalize-only there. Compile-time only.
+#[tauri::command]
+pub fn cmd_live_compute_backend() -> serde_json::Value {
+    serde_json::json!({
+        "backend": minutes_core::transcribe::whisper_backend(),
+        "gpu": minutes_core::transcribe::whisper_gpu_compiled(),
+    })
+}
+
 #[tauri::command]
 pub fn cmd_start_live_transcript(
     app: tauri::AppHandle,

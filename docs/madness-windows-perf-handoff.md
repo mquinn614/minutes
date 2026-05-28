@@ -125,14 +125,30 @@ real-time factor on this PC (and remember other hosts may be slower):
     now uses it so the benchmark table and the future auto-tuner share one source
     of truth. Verifiable off-target: `cargo test -p minutes-core
     --no-default-features live_autotune`.
-  - **Deferred until the PC produces one `whisper_rtf` run** (don't wire blind —
-    that run confirms projection tracks reality on the target; the doc already
-    notes this PC ran slower than the batch estimate): a `cmd_probe_live_config`
-    Tauri command that loads the live model, times ~5 buffers on the embedded
-    demo clip, calls `live_autotune`, and returns the chosen knobs; panel calls it
-    once before `startRecording` and caches the result per (model, backend) in
-    `~/.minutes/madness/`; plus an additive optional `model` param on
-    `cmd_start_live_transcript` so the picker can escalate `base → tiny`.
+  - **Landed (lightweight backend-detect, shipped):** the panel no longer keys
+    live cadence off `navigator.userAgent` (OS) — it asks Rust for the *compiled
+    whisper backend*. `cmd_live_compute_backend` returns
+    `{ backend, gpu }` (from `minutes_core::transcribe::whisper_backend()` /
+    `whisper_gpu_compiled()`, compile-time `cfg!`); `madness.html` `startRecording`
+    picks `{cap:10, partials:true, partialSecs:1.5}` when `gpu`, else the
+    conservative `{cap:3, partials:false}`, and falls back to conservative if the
+    probe errors. Rationale (see measured results above): the cliff that matters
+    is GPU-vs-CPU, not a fine RTF gradient — on CPU the ~1.8s fixed per-call
+    overhead dominates so finalize-only is the right floor; a GPU clears every
+    config at ~0.08. Correctly lifts a *Vulkan/CUDA Windows* build to snappy
+    partials, which the old OS check forced to conservative.
+    Caveat: this is compile-time, so a `vulkan` build on a GPU-less host reports
+    `gpu:true` and would pick snappy partials — acceptable because GPU builds are
+    deliberate, and the standalone fallback question is tracked in the GPU section.
+  - **Still deferred (full per-host probe) — needs a genuinely weak laptop to
+    validate against, not this fast i7+4070:** a `cmd_probe_live_config` Tauri
+    command that loads the live model, times ~5 buffers on the embedded demo clip,
+    feeds them to `live_autotune::choose`, and returns the chosen knobs; panel
+    caches the result per (model, backend) in `~/.minutes/madness/`; plus an
+    additive optional `model` param on `cmd_start_live_transcript` so the picker
+    can escalate `base → tiny`. The pure math (`live_autotune`) is ready; only the
+    runtime timing harness + wiring remain. Build this once a weak host exists to
+    confirm `choose`'s picks hold up where it actually matters.
 
 ## GPU as an OPPORTUNISTIC enhancement (data point on this PC; not the baseline)
 The cuda/vulkan feature flags are ALREADY wired (`crates/core/Cargo.toml`:

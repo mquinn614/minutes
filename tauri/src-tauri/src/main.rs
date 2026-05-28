@@ -2431,6 +2431,7 @@ fn main() {
             commands::cmd_shortcut_status,
             commands::cmd_suspend_shortcut,
             commands::cmd_probe_shortcut,
+            commands::cmd_live_compute_backend,
             commands::cmd_start_live_transcript,
             commands::cmd_stop_live_transcript,
             commands::cmd_live_transcript_status,

@@ -464,6 +464,7 @@
           return [{ slug: 'q4-all-hands', title: 'Q4 All-Hands (sample)', players: 2, scored: true, champion: 'AI' }];
         case 'cmd_live_transcript_status':
           return { active: mockLiveStart > 0, line_count: mockLiveStart > 0 ? 3 : 0, duration_secs: mockLiveStart > 0 ? (Date.now() - mockLiveStart) / 1000 : 0, audioLevel: 0 };
+        case 'cmd_live_compute_backend': return { backend: 'cpu', gpu: false };
         case 'cmd_start_live_transcript': mockLiveStart = Date.now(); return null;
         case 'cmd_stop_live_transcript': mockLiveStart = 0; return null;
         case 'cmd_needs_setup': return { hasModel: true, standalone_live: { ready: true } };
@@ -1082,24 +1083,29 @@
         }
       } catch (e) { /* if the readiness check fails, fall through and try anyway */ }
       try {
-        // Live-transcription tuning, Madness-only (core live transcript untouched):
-        // - macOS (Metal GPU): partials on + 10s cap. Every ~1.5s we re-transcribe
-        //   the growing buffer so buzzwords flash within a second or two; the GPU
-        //   keeps up easily and the long cap keeps multi-word phrases intact.
-        // - Windows (CPU-only whisper build): partials OFF + short 3s cap. Each
-        //   partial re-transcribes the entire growing utterance buffer (cost is
-        //   O(buffer_len) per pass), and a CPU-only build can't sustain that — it
-        //   falls progressively behind AND the bounded audio queue overflows,
-        //   dropping spoken buzzwords entirely. Wider 2.5s/5s partials were still
-        //   extremely laggy in practice. Turning partials OFF means exactly one
-        //   transcription per utterance (the finalize); the 3s cap finalizes fast
-        //   so buzzwords surface in ~3-4s. Net: no backlog, no drops, roughly
-        //   real-time on CPU. (GPU Windows builds measure much faster — a future
-        //   auto-adapt step can lift this once per-host RTF is measured.)
-        const cpuBound = /Windows/i.test(navigator.userAgent || '');
-        const liveOpts = cpuBound
-          ? { cap: 3, partials: false }
-          : { cap: 10, partials: true, partialSecs: 1.5 };
+        // Live-transcription tuning, Madness-only (core live transcript untouched).
+        // Keyed off the whisper compute backend this build was compiled with, not
+        // the OS — a GPU build (Metal on mac, Vulkan/CUDA on Windows) sustains
+        // frequent partials; a CPU-only build does not.
+        // - GPU backend: partials on + 10s cap. Every ~1.5s we re-transcribe the
+        //   growing buffer so buzzwords flash within a second or two; the GPU keeps
+        //   up easily (measured ~0.08x real time) and the long cap keeps multi-word
+        //   phrases intact.
+        // - CPU-only build: partials OFF + short 3s cap. Each partial re-transcribes
+        //   the entire growing utterance buffer (O(buffer_len) per pass), and a
+        //   CPU-only build can't sustain that — it falls behind AND the bounded
+        //   audio queue overflows, dropping buzzwords. Partials OFF means exactly
+        //   one transcription per utterance (the finalize); the 3s cap finalizes
+        //   fast so buzzwords surface in ~3-4s. No backlog, no drops. If the probe
+        //   fails for any reason, this conservative config is the safe fallback.
+        let gpu = false;
+        try {
+          const info = await invoke('cmd_live_compute_backend');
+          gpu = !!(info && info.gpu);
+        } catch (e) { /* unknown backend → stay conservative (CPU config) */ }
+        const liveOpts = gpu
+          ? { cap: 10, partials: true, partialSecs: 1.5 }
+          : { cap: 3, partials: false };
         await invoke('cmd_start_live_transcript', liveOpts);
       } catch (e) {
         // A session already running (e.g. from the CLI) is fine; just attach to it.
