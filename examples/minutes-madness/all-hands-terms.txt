@@ -1,7 +1,7 @@
 # Minutes Madness: sample 16 buzzword seeds (seed = line order).
 # Format: Label | alias | alias
 synergy | synergistic
-AI-powered | AI powered | A.I. | AI | Artificial Intelligence
+AI | AI-powered | AI powered | A.I. | Artificial Intelligence
 headwinds
 leverage | leveraging
 circle back | circle-back
