@@ -1360,30 +1360,27 @@
       try { status = await invoke('cmd_live_transcript_status'); } catch (e) { /* ignore */ }
       if (recording && status) {
         updateRecordButton();
-        if (status.active) {
-          // Audio-activity check via audioLevel (mic energy straight from the
-          // capture callback) OR line_count. We can't rely on line_count alone:
-          // the status sidecar zeroes it when the PID-liveness gate fails (the
-          // in-app session on Windows), which used to trip a false "no audio"
-          // nudge even while the mic was clearly working. audioLevel isn't gated
-          // that way, so it reflects real input.
-          if ((status.audioLevel || 0) > 0 || (status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
-          else if (!audioOk && Date.now() - startupAt > 15000) showAudioNudge();
-        } else if (Date.now() - startupAt > 6000) {
-          // Session ended/failed to start.
-          recording = false;
-          stopLiveTimer();
-          updateRecordButton();
-          if ((status.line_count || 0) === 0) {
-            const diag = (status.diagnostic || '').toLowerCase();
-            if (diag.includes('model')) showModelPrompt(status.diagnostic);
-            else showAudioNudge(); // most likely a mic/permission/device issue
-          }
-          await scoreLive();
-          if (current) renderStatus(current);
-          maybeCelebrate();
-          return;
-        }
+        // Audio-activity check via audioLevel (mic energy straight from the
+        // capture callback) OR line_count. We can't rely on line_count alone:
+        // the status sidecar zeroes it when the PID-liveness gate fails (the
+        // in-app session on Windows), which used to trip a false "no audio"
+        // nudge even while the mic was clearly working. audioLevel isn't gated
+        // that way, so it reflects real input.
+        if ((status.audioLevel || 0) > 0 || (status.line_count || 0) > 0) { audioOk = true; hideAudioNudge(); }
+        else if (!audioOk && Date.now() - startupAt > 15000) showAudioNudge();
+        // NOTE: we deliberately do NOT auto-end the panel based on
+        // `status.active === false`. On Windows, session_status() reads the
+        // live-transcript PID file which the running session holds under an
+        // exclusive lock — the read fails, status.active comes back false,
+        // and the prior auto-end branch then (a) flipped the panel to "Start
+        // recording" while the backend kept capturing audio invisibly, and
+        // (b) called maybeCelebrate, which fired the champion fanfare the
+        // moment the first utterance landed and total_mentions ticked > 0.
+        // Mat fixed the underlying PID-lock read upstream (silverstein/
+        // minutes#258 merged); when that lands in this fork we can revisit
+        // whether we need any auto-end defense at all. Until then: trust the
+        // user to click Stop. The audio nudge above still handles "started
+        // but no mic input" without ever ending the panel state.
       }
       await scoreLive();
     }
