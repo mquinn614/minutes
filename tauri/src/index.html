@@ -834,6 +834,21 @@
       white-space: nowrap;
     }
 
+    .status-pill.starting {
+      font-size: 11px;
+      padding: 3px 10px;
+      max-width: 96px;
+      width: auto;
+      height: auto;
+      border-radius: 12px;
+      opacity: 1;
+      background: var(--accent-tint);
+      color: var(--accent);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .status-pill.live {
       font-size: 11px;
       padding: 3px 10px;
@@ -846,6 +861,7 @@
     }
 
     html[data-platform="macos"] .header .status-pill.recording,
+    html[data-platform="macos"] .header .status-pill.starting,
     html[data-platform="macos"] .header .status-pill.processing,
     html[data-platform="macos"] .header .status-pill.live {
       font-size: 0;
@@ -5671,6 +5687,7 @@
     const updateDebugLaunchButton = document.getElementById('btn-update-debug-launch');
 
     let isRecording = false;
+    let isStarting = false;
     let isProcessing = false;
     let isLiveTranscript = false;
     let currentMeetingPath = null;
@@ -6335,6 +6352,7 @@
       try {
         const status = await invoke('cmd_capture_status');
         const wasRecording = isRecording;
+        const wasStarting = isStarting;
         const wasProcessing = isProcessing;
         activationState = status.activation || activationState;
         const onboardingRoot = meetingsScroll.querySelector('.onboarding-content');
@@ -6343,6 +6361,7 @@
         }
         const mode = status.recordingMode || 'meeting';
         isRecording = status.recording;
+        isStarting = !!status.starting;
         isProcessing = !!status.processing;
         updateJobsChip(status.processingJobCount || 0);
         renderProcessingJobs(status.processingJobs || []);
@@ -6364,7 +6383,27 @@
           renderUpdateBanner();
         }
 
-        if (isRecording) {
+        if (isStarting && !isRecording) {
+          statusPill.className = 'status-pill starting';
+          statusPill.textContent = 'starting';
+          recordingBar.classList.remove('active');
+          processingBar.classList.add('active');
+          processingBar.classList.remove('has-jobs');
+          processingTitle.textContent = activeCallSession && !activeCallSession.dismissed
+            ? 'Starting call recording'
+            : currentProcessingTitle(mode).replace('Processing', 'Starting');
+          processingStage.textContent = activeCallSession && !activeCallSession.dismissed
+            ? 'Connecting to microphone and system audio...'
+            : 'Checking microphone and recording state...';
+          processingElapsed.textContent = '';
+          liveBar.classList.remove('active');
+          isLiveTranscript = false;
+          callBanner.classList.remove('active');
+          setFooterCaptureMode(true, 'starting');
+          if (!wasStarting && !wasRecording && !wasProcessing) {
+            startFastPoll();
+          }
+        } else if (isRecording) {
           statusPill.className = 'status-pill recording';
           const queueCount = status.processingJobCount || 0;
           const callHealth = status.callCaptureHealth;
@@ -6401,7 +6440,7 @@
           document.getElementById('btn-stop').disabled = !!stopRequested;
 
           // Speed up polling when recording starts
-          if (!wasRecording && !wasProcessing) {
+          if (!wasRecording && !wasStarting && !wasProcessing) {
             startFastPoll();
             playCue('start');
           }
@@ -6438,7 +6477,7 @@
             }, 1000);
           }
 
-          if (!wasRecording && !wasProcessing) {
+          if (!wasRecording && !wasStarting && !wasProcessing) {
             startFastPoll();
           }
           if (wasRecording) {
@@ -6496,7 +6535,7 @@
             processingElapsed.textContent = '';
 
             // Slow down polling when recording/processing/live stops (T5)
-            if (wasRecording || wasProcessing || wasLive) {
+            if (wasRecording || wasStarting || wasProcessing || wasLive) {
               stopFastPoll();
               loadMeetings(); // Refresh list
               if (jobsOverlay.classList.contains('active')) loadProcessingJobsCenter();
@@ -6550,12 +6589,15 @@
           retryBtn.hidden = true;
           retryBtn.dataset.jobId = '';
         }
+        const openBtn = document.getElementById('btn-open-output');
+        if (openBtn) openBtn.hidden = false;
         return;
       }
 
       const isCapture = notice.kind === 'preserved-capture';
       const isSaved = notice.kind === 'saved';
-      const nextKey = `${notice.kind}:${notice.path}:${notice.jobId || ''}`;
+      const noticeIdentity = notice.path || notice.detail || notice.title || '';
+      const nextKey = `${notice.kind}:${noticeIdentity}:${notice.jobId || ''}`;
       const isNewNotice = nextKey !== lastOutputKey;
       if (isNewNotice) {
         playCue(isSaved ? 'complete' : 'error');
@@ -6567,7 +6609,9 @@
       outputNoticeTitle.textContent = notice.title || (isCapture ? 'Capture preserved' : isSaved ? 'Saved meeting' : 'Needs attention');
       outputNoticeDetail.textContent = notice.detail || '';
       outputNoticePath.textContent = notice.path || '';
-      document.getElementById('btn-open-output').textContent = isCapture ? 'Open Capture' : isSaved ? 'Open Meeting' : 'Open';
+      const openOutputBtn = document.getElementById('btn-open-output');
+      openOutputBtn.textContent = isCapture ? 'Open Capture' : isSaved ? 'Open Meeting' : 'Open';
+      openOutputBtn.hidden = !notice.path;
       // Only saved notices auto-dismiss + can rely on click-to-dismiss; everything else
       // (preserved-capture, error, stale-recording, watch-failed, working-copy) needs the
       // user to acknowledge it explicitly, so show a Dismiss button for those cases.
@@ -6630,7 +6674,9 @@
       if (active) {
         const tooltip = reason === 'live'
           ? 'Live transcript is already running. Use the live bar to stop it.'
-          : 'Finish the current recording before starting another capture.';
+          : reason === 'starting'
+            ? 'Recording is starting. Wait for the recorder to finish connecting.'
+            : 'Finish the current recording before starting another capture.';
         recordButton.title = tooltip;
         liveButton.title = tooltip;
         quickThoughtButton.title = tooltip;
@@ -7098,19 +7144,39 @@
       return args ? invoke('cmd_start_recording', args) : invoke('cmd_start_recording');
     }
 
+    function showRecordingStartError(error) {
+      const detail = typeof error === 'string'
+        ? error
+        : (error?.message || String(error || 'Recording could not be started.'));
+      updateOutputNotice({
+        kind: 'error',
+        title: 'Recording not started',
+        detail,
+        path: '',
+      });
+    }
+
     document.getElementById('btn-record').addEventListener('click', async () => {
       try {
+        setFooterCaptureMode(true, 'starting');
+        startFastPoll();
         await startDesktopRecordingFromUi();
       } catch (e) {
         console.error('Record:', e);
+        showRecordingStartError(e);
+        setFooterCaptureMode(false);
       }
     });
 
     quickThoughtButton.addEventListener('click', async () => {
       try {
+        setFooterCaptureMode(true, 'starting');
+        startFastPoll();
         await invoke('cmd_start_recording', { mode: 'quick-thought' });
       } catch (e) {
         console.error('Quick thought:', e);
+        showRecordingStartError(e);
+        setFooterCaptureMode(false);
       }
     });
 
@@ -8164,9 +8230,13 @@
 
       root.querySelector('#btn-start-first-recording').addEventListener('click', async () => {
         try {
+          setFooterCaptureMode(true, 'starting');
+          startFastPoll();
           await invoke('cmd_start_recording');
         } catch (e) {
           console.error('First recording:', e);
+          showRecordingStartError(e);
+          setFooterCaptureMode(false);
         }
       });
     }
@@ -8267,8 +8337,14 @@
 
           document.getElementById('btn-record-upcoming').onclick = async () => {
             try {
+              setFooterCaptureMode(true, 'starting');
+              startFastPoll();
               await startDesktopRecordingFromUi();
-            } catch (e) { console.error('Record:', e); }
+            } catch (e) {
+              console.error('Record:', e);
+              showRecordingStartError(e);
+              setFooterCaptureMode(false);
+            }
           };
         } else {
           upcoming.classList.remove('active');
@@ -10334,12 +10410,16 @@
 
     document.getElementById('btn-record-call').addEventListener('click', async () => {
       try {
+        setFooterCaptureMode(true, 'starting');
+        startFastPoll();
         // Mark the session as call-detection-initiated so stop_when_call_ends
         // knows this recording is eligible for the auto-stop prompt when the
         // call app exits. Manual `minutes record` / hotkey starts never set this.
         await invoke('cmd_start_recording', { intent: 'call', source: 'call_detect' });
       } catch (e) {
         console.error('Call recording:', e);
+        showRecordingStartError(e);
+        setFooterCaptureMode(false);
       }
     });
 

@@ -2,7 +2,7 @@
 
 > Generated file. Do not edit by hand.
 > Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
-> Last generated: 2026-05-20
+> Last generated: 2026-05-27
 
 ## Product
 
@@ -10,7 +10,12 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 
 29 tools • 7 resources • Interactive MCP App dashboard • Prompt templates
 
-**What's new in 0.18.2:**
+**What's new in 0.18.3:**
+• **Windows live transcript no longer reports a frozen session.** On Windows, a live transcript session holds its PID file under a mandatory OS lock, which made status reads fail and report the session as inactive, so the in-app Live timer and line count froze at 0:00 and a concurrent recording could clobber the shared transcript file. Minutes now treats a held lock as proof the session is alive. macOS and Linux were never affected. Thanks to Quinn (@mquinn614) for the report and diagnosis.
+• **Richer MCP `get_meeting` output.** Structured meeting content returned over MCP is more complete.
+• **Clearer desktop recording feedback.** Recording-start failures are now surfaced instead of failing silently, and processing stages read more clearly.
+
+**Also new in 0.18.2:**
 • **Manual meeting ingest accepts normal YAML dates.** `minutes ingest` now accepts hand-authored frontmatter like `date: 2024-05-14` and local timestamps without an offset, while keeping existing RFC3339 timestamps working.
 • **Manual files no longer need a synthetic duration.** Ingested markdown that omits `duration` now defaults to `0s`, which is enough for knowledge-base extraction and avoids a second confusing validation failure.
 
@@ -25,7 +30,7 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 • **Dual-AAC native-call .mov files transcribe correctly.** macOS call captures with separate voice/system AAC tracks are mixed before transcription instead of producing doubled-duration garble.
 • **Summarization timeouts degrade explicitly.** Meetings with transcript output but failed summary generation now show structured degraded status instead of pretending the meeting is complete.
 
-**Known follow-ups:** call-end auto-stop reliability (#129) and multi-party remote-speaker diarization quality (#169) remain open. This release focuses on manual ingest/frontmatter compatibility. Native-capture recovery remains covered by 0.18.1; call-end auto-stop reliability and multi-party remote-speaker diarization are still separate field reports.
+**Known follow-ups:** call-end auto-stop reliability (#129) and multi-party remote-speaker diarization quality (#169) remain open. This release focuses on Windows live transcript reliability and MCP output completeness; manual ingest/frontmatter compatibility shipped in 0.18.2 and native-capture recovery in 0.18.1.
 
 **Setup:** `npx minutes-mcp` gets you search, browsing, and the dashboard right away. For recording and transcription, Minutes can auto-install the CLI on first use, or you can install it yourself with `brew install silverstein/tap/minutes` or `cargo install minutes-cli`, then run `minutes setup --model tiny`, `minutes setup --parakeet`, or `minutes setup --demo`.
 
