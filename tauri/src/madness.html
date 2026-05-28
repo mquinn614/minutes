@@ -1281,6 +1281,25 @@
           }
         }
 
+        // CPU safety floor: the synthetic probe systematically under-models
+        // the real live path's concurrent cost (VAD per chunk, JSONL writes,
+        // 500 ms scoring loop, audio-queue pressure) — so configs the probe
+        // rates "Ok" (incl. partials @3s/6s, load 0.76) still fall behind on
+        // CPU hosts and drop audio. Until the probe is calibrated against
+        // real MINUTES_LIVE_TIMING data, force finalize-only + 5s cap on CPU:
+        // one whisper call per utterance, ~5s flash latency, no backlog. GPU
+        // backends (vulkan/cuda/metal/coreml/hipblas) keep the tuner's pick —
+        // per-call overhead there is negligible.
+        if (probe.backend === 'cpu' && probe.choice) {
+          probe.choice = {
+            cap: 5,
+            partials: false,
+            partialSecs: null,
+            projected_load: null,
+            verdict: 'CPU safety floor',
+          };
+        }
+
         // Surface the picked config so non-technical hosts can read what was
         // calibrated. Skipped on the fallback path (already wrote its own line
         // in the catch block above), recognizable because verdict is "unknown".
