@@ -34,8 +34,14 @@ const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/rele
 const MINUTES_DISCUSSIONS_URL: &str = "https://github.com/silverstein/minutes/discussions";
 
 static CLEAN_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+// Backstop timeout for the bounded cleanup+exit phase only (PTY teardown,
+// parakeet shutdown, the terminal exit). Armed inside the worker thread
+// AFTER any recording-flush wait, so it never force-kills a legitimately
+// slow recording shutdown. Normal cleanup+exit completes in well under a
+// second, so 5s is a comfortable margin while still capping any future
+// teardown regression at a few seconds instead of a forever-hang.
 #[cfg(target_os = "windows")]
-const CLEAN_EXIT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const CLEAN_EXIT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -195,7 +201,13 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
         code,
         "request_clean_exit: accepted"
     );
-    spawn_windows_exit_watchdog(code, "request_clean_exit");
+    // NOTE: the watchdog is intentionally NOT armed here. It's armed inside
+    // each worker thread, immediately before `finish_clean_exit`, so it
+    // guards only the bounded cleanup+exit phase — never the
+    // `wait_for_recording_shutdown_forever` flush in the recording branch,
+    // which is legitimately variable (a long meeting can take seconds to
+    // finalize). Arming it up here with a short timeout would risk
+    // force-killing a recording mid-flush.
 
     let state = app.state::<commands::AppState>();
     let recording_active = commands::recording_active(&state.recording);
@@ -238,6 +250,9 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
             // the process out from under it. Below human perception.
             #[cfg(not(target_os = "macos"))]
             std::thread::sleep(std::time::Duration::from_millis(200));
+            // Arm the backstop now — recording flush is done, only the
+            // bounded cleanup+exit phase remains.
+            spawn_windows_exit_watchdog(code, "recording-branch-cleanup");
             tracing::info!(
                 target: "minutes::shutdown",
                 "request_clean_exit worker: invoking finish_clean_exit"
@@ -281,6 +296,9 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
                     "request_clean_exit worker: non-recording branch sleep before finish_clean_exit"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(200));
+                // Arm the backstop for the bounded cleanup+exit phase. No
+                // recording flush in this branch, so it's safe immediately.
+                spawn_windows_exit_watchdog(code, "non-recording-cleanup");
                 tracing::info!(
                     target: "minutes::shutdown",
                     "request_clean_exit worker: invoking finish_clean_exit"
@@ -1413,28 +1431,36 @@ fn spawn_meetings_refresh_watcher(app: &tauri::AppHandle, output_dir: std::path:
     });
 }
 
-/// Install a minimal `tracing` subscriber that captures ONLY the
-/// `minutes::shutdown` diagnostic target and appends it to the standard
-/// `~/.minutes/logs/minutes.log` file.
+/// Opt-in shutdown tracing: install a minimal `tracing` subscriber that
+/// captures ONLY the `minutes::shutdown` diagnostic target and appends it
+/// to `~/.minutes/logs/minutes.log`. **No-op unless `MINUTES_SHUTDOWN_TRACE`
+/// is set in the environment.**
 ///
-/// Why this exists: the Tauri menu-bar app historically installs NO
-/// tracing subscriber (see the comment at the top of `main`), so the
-/// `tracing::info!(target: "minutes::shutdown", …)` lines added to the
-/// quit lifecycle were being dropped on the floor — the diagnostic log
-/// came up empty, which reads as "the path was never reached" when in
-/// fact nothing was listening.
+/// This is debugging scaffolding, kept (gated) rather than deleted because
+/// Windows-shutdown bugs are subtle and recur — when one does, a single env
+/// var (`MINUTES_SHUTDOWN_TRACE=1`) turns the full per-step quit trace back
+/// on without a rebuild. By default it's off, so the normal quit path writes
+/// nothing to the log and the `tracing::info!(target: "minutes::shutdown")`
+/// call sites are silent no-ops (no subscriber listening).
 ///
-/// The filter is scoped to exactly `minutes::shutdown=trace` and nothing
-/// else, so the chatty whisper.cpp / ggml C-level loggers (targets
-/// `whisper_rs` / `ggml`, routed through tracing by
-/// `install_whisper_logging_hooks`) stay suppressed — they don't match
-/// this directive and the default level is off. No stderr flood, just the
-/// shutdown breadcrumbs.
+/// IMPORTANT: this gating does NOT affect the shutdown watchdog's
+/// force-kill behavior. The watchdog (`spawn_windows_exit_watchdog`) runs
+/// its `TerminateProcess` backstop regardless of whether this subscriber is
+/// installed — only its log lines are gated. Quit safety is unconditional;
+/// only the breadcrumbs are opt-in.
 ///
-/// GUI process has no console, so we write to a file, not stderr. ANSI is
-/// disabled so the log stays grep-friendly.
+/// When enabled: the filter is scoped to exactly `minutes::shutdown=trace`,
+/// so the chatty whisper.cpp / ggml C loggers (`whisper_rs` / `ggml`) stay
+/// suppressed. GUI process has no console, so output goes to the log file,
+/// not stderr; ANSI off so the log stays grep-friendly.
 fn install_shutdown_log_subscriber() {
     use tracing_subscriber::EnvFilter;
+
+    // Opt-in only. Off by default → no subscriber → shutdown tracing is a
+    // silent no-op and the normal quit path leaves no log noise.
+    if std::env::var_os("MINUTES_SHUTDOWN_TRACE").is_none() {
+        return;
+    }
 
     // Ensure the directory exists before the writer tries to open the file.
     let _ = minutes_core::logging::ensure_log_dir();
@@ -1472,10 +1498,12 @@ fn install_shutdown_log_subscriber() {
 }
 
 fn main() {
-    // Capture the shutdown-diagnostic breadcrumbs to minutes.log. Must run
-    // before `install_whisper_logging_hooks` so our subscriber is the global
-    // default; the whisper/ggml C logs route into it but are filtered out by
-    // the `minutes::shutdown=trace`-only directive.
+    // Opt-in shutdown tracing (no-op unless MINUTES_SHUTDOWN_TRACE is set).
+    // Must run before `install_whisper_logging_hooks` so that — when enabled
+    // — our subscriber is the global default and the whisper/ggml C logs
+    // route into it but are filtered out by the `minutes::shutdown=trace`-only
+    // directive. When disabled (the default), this is a no-op and no
+    // subscriber is installed at all.
     install_shutdown_log_subscriber();
 
     // Route whisper.cpp + ggml C-level logs through Rust `tracing` so they
@@ -1488,13 +1516,14 @@ fn main() {
     // its own, so the worker subprocess needs the same routing or it
     // floods stderr while a recording is processing.
     //
-    // NOTE: as of `install_shutdown_log_subscriber` above, the Tauri app
-    // now DOES have a tracing subscriber — but it is scoped to the
-    // `minutes::shutdown=trace` target only. The chatty whisper.cpp / ggml
-    // C INFO logs (targets `whisper_rs` / `ggml`) do not match that
-    // directive and default to off, so they remain suppressed: no stderr
-    // flood, no log spam. If the filter is ever broadened, demote
-    // `whisper_rs` and `ggml` to `warn` or the #163 flood returns.
+    // NOTE: the Tauri app normally has NO tracing subscriber, so these C
+    // logs are dropped (the silencing behavior we want). Only when
+    // MINUTES_SHUTDOWN_TRACE is set does `install_shutdown_log_subscriber`
+    // above install one — and that one is scoped to the `minutes::shutdown`
+    // target, so the chatty whisper.cpp / ggml C INFO logs (targets
+    // `whisper_rs` / `ggml`) still don't match and stay suppressed even with
+    // tracing on. If that filter is ever broadened, demote `whisper_rs` and
+    // `ggml` to `warn` or the #163 flood returns.
     minutes_core::install_whisper_logging_hooks();
 
     #[cfg(target_os = "macos")]
