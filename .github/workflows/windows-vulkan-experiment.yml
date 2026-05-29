@@ -39,23 +39,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GGML's Vulkan backend builds vulkan-shaders-gen as a CMake
-      # ExternalProject. With the default Visual Studio generator that
-      # subproject hits MSBuild's "items cannot be built in parallel"
-      # dependency-ordering error and the build fails. Forcing the Ninja
-      # generator (below) fixes it — but Ninja, unlike the VS generator,
-      # does NOT auto-discover MSVC, so we must activate the MSVC dev
-      # environment first (puts cl.exe / link.exe on PATH for Ninja) and
-      # make sure Ninja itself is installed.
-      - name: Set up MSVC developer environment (for Ninja + cl.exe)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install Ninja
-        shell: pwsh
-        run: choco install ninja -y --no-progress
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -109,8 +92,33 @@ jobs:
         shell: bash
         run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
 
+      # MSVC env + Ninja are set up HERE — after Tauri CLI install, immediately
+      # before the build — and NOT earlier. If msvc-dev-cmd runs before the
+      # bash-shell `cargo install tauri-cli` step, the activated MSVC env makes
+      # rustc resolve `link.exe` from PATH, and Git Bash's /usr/bin/link.exe
+      # (a GNU hardlink tool) shadows MSVC's linker → tauri-cli fails to link.
+      # Placing it here keeps tauri-cli's install in the clean default env
+      # (like release-windows-desktop.yml) and scopes MSVC activation to the
+      # pwsh build step below, where Git's /usr/bin is not on PATH.
+      #
+      # Why it's needed at all: GGML's Vulkan backend builds vulkan-shaders-gen
+      # as a CMake ExternalProject. The default Visual Studio generator can't
+      # order its dependencies ("items cannot be built in parallel"); the Ninja
+      # generator (CMAKE_GENERATOR below) fixes it, but Ninja — unlike the VS
+      # generator — does not auto-discover MSVC, so cl.exe/link.exe must be on
+      # PATH via the dev environment.
+      - name: Set up MSVC developer environment (for Ninja + cl.exe)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+
       - name: Build desktop installer (Vulkan, unsigned)
         working-directory: tauri/src-tauri
+        shell: pwsh
         run: cargo tauri build --features parakeet,vulkan --ci --bundles nsis --no-sign
         env:
           CARGO_NET_RETRY: 3
