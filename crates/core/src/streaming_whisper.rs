@@ -108,7 +108,7 @@ impl StreamingWhisper {
             audio_buffer: Vec::with_capacity(16000 * 30), // pre-alloc 30s
             samples_since_partial: 0,
             last_partial: String::new(),
-            n_threads: num_cpus(),
+            n_threads: live_n_threads(),
             language,
             has_created_state: false,
             partial_max_samples,
@@ -230,10 +230,11 @@ impl StreamingWhisper {
         // actually come from on the target hardware.
         let total_ms = call_start.elapsed().as_millis();
         crate::live_timing::log(&format!(
-            "whisper {} buf={:.1}s actx={} full={}ms total(+state)={}ms rtf={:.2} dropped_chunks={}",
+            "whisper {} buf={:.1}s actx={} threads={} full={}ms total(+state)={}ms rtf={:.2} dropped_chunks={}",
             if is_final { "FINAL  " } else { "partial" },
             duration_secs,
             audio_ctx,
+            self.n_threads,
             elapsed_ms,
             total_ms,
             total_ms as f64 / 1000.0 / duration_secs.max(0.001),
@@ -311,6 +312,28 @@ fn suppress_stderr<T>(f: impl FnOnce() -> T) -> T {
 
 fn num_cpus() -> i32 {
     whisper_guard::params::num_cpus()
+}
+
+/// Thread count for the live streaming path.
+///
+/// Defaults to [`num_cpus`] (capped at 8 in whisper-guard), but the
+/// `MINUTES_LIVE_THREADS` env var overrides it for empirical tuning on a
+/// target host. The shared 8-thread cap was found to leave performance on
+/// the table on many-core machines (an i7-14700KF benchmark runs whisper at
+/// ~1.9s/call on 28 threads, while the live path was pinned at 8), and the
+/// optimal count on hybrid P/E-core CPUs isn't obvious — so this lets us
+/// sweep values (set `MINUTES_LIVE_THREADS=16` etc.) without a rebuild and
+/// pick the winner from real `MINUTES_LIVE_TIMING` data. A non-positive or
+/// unparseable value falls back to the default.
+fn live_n_threads() -> i32 {
+    if let Ok(v) = std::env::var("MINUTES_LIVE_THREADS") {
+        if let Ok(n) = v.trim().parse::<i32>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    num_cpus()
 }
 
 /// Compute whisper's encoder context size (`audio_ctx`) for a buffer of
