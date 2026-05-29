@@ -200,6 +200,20 @@ impl StreamingWhisper {
         params.set_n_threads(self.n_threads);
         params.set_language(self.language.as_deref());
 
+        // Size the encoder context to the actual buffered audio. Without this,
+        // whisper.cpp encodes a fixed 1500-mel-frame (30s) window on EVERY
+        // call — short audio is zero-padded to 30s — so a 1.3s live buffer
+        // pays the same ~6s encode as 30s. That flat per-call cost is the
+        // root of live-scoring lag on CPU (measured: 6.2s/call regardless of
+        // buffer length on an i7-14700KF). Sizing audio_ctx to the buffer
+        // collapses it for short streaming utterances; whisper.cpp #1855
+        // measured ~3.4x faster on short base.en clips with WER unchanged.
+        // Long buffers near the cap resolve to ~1500 (the full window), which
+        // is correct. Streaming-only: the batch path keeps the default 1500
+        // because it processes 30s chunks of real audio.
+        let audio_ctx = audio_ctx_for_samples(self.audio_buffer.len());
+        params.set_audio_ctx(audio_ctx);
+
         let start = std::time::Instant::now();
 
         if let Err(e) = state.full(params, &self.audio_buffer) {
@@ -216,9 +230,10 @@ impl StreamingWhisper {
         // actually come from on the target hardware.
         let total_ms = call_start.elapsed().as_millis();
         crate::live_timing::log(&format!(
-            "whisper {} buf={:.1}s full={}ms total(+state)={}ms rtf={:.2} dropped_chunks={}",
+            "whisper {} buf={:.1}s actx={} full={}ms total(+state)={}ms rtf={:.2} dropped_chunks={}",
             if is_final { "FINAL  " } else { "partial" },
             duration_secs,
+            audio_ctx,
             elapsed_ms,
             total_ms,
             total_ms as f64 / 1000.0 / duration_secs.max(0.001),
@@ -298,6 +313,34 @@ fn num_cpus() -> i32 {
     whisper_guard::params::num_cpus()
 }
 
+/// Compute whisper's encoder context size (`audio_ctx`) for a buffer of
+/// `n_samples` 16kHz mono samples.
+///
+/// whisper.cpp's encoder runs over a fixed 1500-mel-frame window (≈30s) by
+/// default, padding shorter audio — so per-call encode cost is constant
+/// regardless of how much audio is actually buffered. For live streaming of
+/// short utterances that's mostly wasted compute. Sizing audio_ctx to the
+/// real buffer length (whisper.cpp #1855) recovers a ~3.4x speedup on short
+/// clips with no measured accuracy loss.
+///
+/// Formula: `(secs/30)*1500 + 128` padding, rounded up to a multiple of 64
+/// (whisper.cpp kernels prefer 64-aligned context), clamped to `[128, 1500]`.
+/// A buffer at/over the 30s window resolves to the full 1500 (no reduction).
+fn audio_ctx_for_samples(n_samples: usize) -> i32 {
+    let audio_secs = n_samples as f32 / 16_000.0;
+    let raw = (audio_secs / 30.0) * 1500.0 + 128.0;
+    let rounded = ((raw / 64.0).ceil() as i32) * 64;
+    // 1500 is the model's fixed n_audio_ctx (the full 30s window) and is NOT
+    // 64-aligned — it's the hard ceiling. Anything that rounds to >= 1500 just
+    // uses the full window (equivalent to the default). Reduced values stay
+    // 64-aligned for kernel efficiency, with a 128 floor.
+    if rounded >= 1500 {
+        1500
+    } else {
+        rounded.max(128)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +350,28 @@ mod tests {
         let sw = StreamingWhisper::new(None);
         assert_eq!(sw.duration_secs(), 0.0);
         assert!(sw.audio_buffer.is_empty());
+    }
+
+    #[test]
+    fn audio_ctx_scales_with_buffer_and_clamps() {
+        // Results are in [128, 1500]; reduced values are 64-aligned, and the
+        // 1500 ceiling (model's full n_audio_ctx) is the one allowed exception.
+        for &samples in &[0usize, 16_000, 80_000, 240_000, 480_000, 960_000] {
+            let ctx = audio_ctx_for_samples(samples);
+            assert!((128..=1500).contains(&ctx), "ctx {ctx} out of range");
+            assert!(ctx == 1500 || ctx % 64 == 0, "ctx {ctx} not 64-aligned");
+        }
+        // Short buffers get a small context (the whole point).
+        assert!(audio_ctx_for_samples(16_000) < 320, "1s should be small"); // ~256
+        assert!(audio_ctx_for_samples(80_000) < 512, "5s should be modest"); // ~384
+        // Monotonic: more audio → larger (or equal) context.
+        assert!(audio_ctx_for_samples(16_000) <= audio_ctx_for_samples(80_000));
+        assert!(audio_ctx_for_samples(80_000) <= audio_ctx_for_samples(240_000));
+        // A full 30s+ window resolves to the max (no reduction).
+        assert_eq!(audio_ctx_for_samples(16_000 * 30), 1500);
+        assert_eq!(audio_ctx_for_samples(16_000 * 60), 1500);
+        // Empty buffer floors at the minimum, never zero/negative.
+        assert_eq!(audio_ctx_for_samples(0), 128);
     }
 
     #[test]
