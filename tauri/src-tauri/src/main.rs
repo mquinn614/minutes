@@ -64,62 +64,39 @@ fn exit_process_without_destructors(code: i32) -> ! {
         code,
         "exit_process_without_destructors: entered"
     );
-    // Process-termination cascade by platform:
+    // Normal exit path on every platform: libc::_exit.
     //
-    // macOS / Linux: libc::_exit is sufficient. POSIX _exit terminates
-    // the process immediately without running atexit handlers, signal
-    // handlers, or stdio flushing.
+    // POSIX _exit terminates the process immediately without running
+    // atexit handlers, signal handlers, stdio flushing, or — critically —
+    // C++ static destructors. The desktop app loads whisper.cpp / ggml,
+    // whose global C++ state has destructors that can call abort() on a
+    // partially-initialized context (issue #229: a transcription spawn
+    // failure left a context in a bad state, then a normal exit crashed
+    // the process via SIGABRT inside __cxa_finalize_ranges). macOS has
+    // used libc::_exit for exactly this reason for a long time; the same
+    // risk applies to the Windows desktop build, so we use it everywhere.
     //
-    // Windows: libc::_exit is NOT sufficient. The MSVC C runtime's _exit
-    // skips atexit, but it still runs "quick C library termination" —
-    // which on Windows includes DLL_PROCESS_DETACH for every loaded DLL
-    // AND closing open file handles. WebView2's loaded DLLs hold handles
-    // (pipes / shared sections) to the msedgewebview2 child processes,
-    // and closing those handles waits on the children's RPC dispatch —
-    // which can be hung on the same race that caused us to want to exit
-    // in the first place. Net effect from real user testing: the worker
-    // thread reaches libc::_exit but the process never actually dies,
-    // it just becomes a half-alive zombie whose event loop is responsive
-    // but whose webview is locked. Show Minutes works, but the window
-    // freezes on interaction.
+    // Historical note: an earlier iteration of this function used
+    // kernel32::TerminateProcess on Windows, on the theory that libc::_exit
+    // left a "half-alive zombie" (window hidden, process alive). That
+    // diagnosis was WRONG. The minutes::shutdown trace later proved the
+    // worker thread never reached this function at all — it was wedged in
+    // PtyManager::kill_session's unconditional reader-thread join (ConPTY
+    // never delivers EOF on child kill). Once that join was bounded (see
+    // pty.rs), execution reaches here cleanly and a plain libc::_exit
+    // terminates the process instantly, every time. TerminateProcess was
+    // treating a symptom of a hang that lived three calls upstream.
     //
-    // The Windows answer is `kernel32::TerminateProcess(GetCurrentProcess(),
-    // code)` — the same syscall Task Manager → End Task uses. It does NOT
-    // unload DLLs cleanly. It does NOT close handles. It does not run
-    // DLL_PROCESS_DETACH. It just kills the process and every thread.
-    // This is the only call that survives a wedged WebView2 child.
-    //
-    // We've already hidden the webview windows in `predrain_webview_windows`
-    // before getting here, so WebView2's own cleanup has had a 200 ms window
-    // to run inside the still-pumping event loop. By the time TerminateProcess
-    // fires, anything that was going to succeed has succeeded; anything
-    // that was going to hang is what we're cutting through.
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
-        tracing::info!(
-            target: "minutes::shutdown",
-            code,
-            "exit_process_without_destructors: calling TerminateProcess(GetCurrentProcess)"
-        );
-        // GetCurrentProcess returns a pseudo-handle that doesn't need closing.
-        // Cast i32 → u32 because Windows exit codes are DWORD; negative codes
-        // wrap (intentional, matches MSVC convention).
-        TerminateProcess(GetCurrentProcess(), code as u32);
-        tracing::error!(
-            target: "minutes::shutdown",
-            "exit_process_without_destructors: TerminateProcess returned unexpectedly"
-        );
-    }
-
-    // POSIX path (macOS, Linux), and a belt-and-suspenders fallback on Windows
-    // if TerminateProcess somehow returned (per Microsoft docs it never does
-    // when called on the current process, but the BOOL signature is fallible).
+    // TerminateProcess is retained ONLY in the watchdog
+    // (`spawn_windows_exit_watchdog`) as a last-resort nuclear backstop:
+    // if some future teardown step ever wedges the normal path again, the
+    // watchdog force-kills after a timeout so the app can never hang
+    // forever on quit. The normal path stays clean.
     unsafe {
         tracing::info!(
             target: "minutes::shutdown",
             code,
-            "exit_process_without_destructors: falling back to libc::_exit"
+            "exit_process_without_destructors: calling libc::_exit"
         );
         libc::_exit(code);
     }
