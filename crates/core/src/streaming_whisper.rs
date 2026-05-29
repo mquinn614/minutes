@@ -310,21 +310,12 @@ fn suppress_stderr<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn num_cpus() -> i32 {
-    whisper_guard::params::num_cpus()
-}
-
 /// Thread count for the live streaming path.
 ///
-/// Defaults to [`num_cpus`] (capped at 8 in whisper-guard), but the
-/// `MINUTES_LIVE_THREADS` env var overrides it for empirical tuning on a
-/// target host. The shared 8-thread cap was found to leave performance on
-/// the table on many-core machines (an i7-14700KF benchmark runs whisper at
-/// ~1.9s/call on 28 threads, while the live path was pinned at 8), and the
-/// optimal count on hybrid P/E-core CPUs isn't obvious — so this lets us
-/// sweep values (set `MINUTES_LIVE_THREADS=16` etc.) without a rebuild and
-/// pick the winner from real `MINUTES_LIVE_TIMING` data. A non-positive or
-/// unparseable value falls back to the default.
+/// Defaults to [`live_default_threads`] (available parallelism capped at 16),
+/// overridable via the `MINUTES_LIVE_THREADS` env var for empirical tuning on
+/// a target host. A non-positive or unparseable value falls back to the
+/// default.
 fn live_n_threads() -> i32 {
     if let Ok(v) = std::env::var("MINUTES_LIVE_THREADS") {
         if let Ok(n) = v.trim().parse::<i32>() {
@@ -333,7 +324,22 @@ fn live_n_threads() -> i32 {
             }
         }
     }
-    num_cpus()
+    live_default_threads()
+}
+
+/// Default live-path thread count: available parallelism capped at 16.
+///
+/// The shared `whisper_guard::num_cpus()` caps at 8, which a hardware sweep on
+/// an i7-14700KF showed leaves ~30% on the table for the live path
+/// (8 threads ≈ 3.4s/call, 16 ≈ 2.4s/call). Returns past 16 flatten hard
+/// (20 ≈ 2.3s, ~5% over 16) and risk E-core drag plus starving the WebView2
+/// UI / scoring loop of cores, so 16 is the sweet spot. The cap is a no-op on
+/// smaller fleet machines (a 4- or 8-core laptop uses all its cores). Batch
+/// transcription still uses the shared 8-cap — this only widens the live path.
+fn live_default_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|p| (p.get() as i32).min(16))
+        .unwrap_or(8)
 }
 
 /// Compute whisper's encoder context size (`audio_ctx`) for a buffer of
