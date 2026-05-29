@@ -39,6 +39,23 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # GGML's Vulkan backend builds vulkan-shaders-gen as a CMake
+      # ExternalProject. With the default Visual Studio generator that
+      # subproject hits MSBuild's "items cannot be built in parallel"
+      # dependency-ordering error and the build fails. Forcing the Ninja
+      # generator (below) fixes it — but Ninja, unlike the VS generator,
+      # does NOT auto-discover MSVC, so we must activate the MSVC dev
+      # environment first (puts cl.exe / link.exe on PATH for Ninja) and
+      # make sure Ninja itself is installed.
+      - name: Set up MSVC developer environment (for Ninja + cl.exe)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -97,6 +114,15 @@ jobs:
         run: cargo tauri build --features parakeet,vulkan --ci --bundles nsis --no-sign
         env:
           CARGO_NET_RETRY: 3
+          # Force the Ninja generator for whisper-rs-sys's CMake build. The
+          # default Visual Studio generator can't order the GGML-Vulkan
+          # vulkan-shaders-gen ExternalProject dependencies correctly and
+          # fails with "items cannot be built in parallel". Ninja resolves
+          # the dependency graph properly. The cmake crate (used by
+          # whisper-rs-sys) honors CMAKE_GENERATOR. MSVC dev env + Ninja are
+          # set up in earlier steps so cl.exe is on PATH.
+          CMAKE_GENERATOR: "Ninja"
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
           # Match the shipped CPU build's instruction ceiling so the CPU-fallback
           # path in this Vulkan artifact behaves like the real installer on hosts
           # with no usable GPU. The `vulkan` feature adds the GPU backend on top;
