@@ -2787,7 +2787,14 @@ mod tests {
             let _recording_guard = crate::pid::create_pid_guard(&crate::pid::pid_path()).unwrap();
             let stop_flag = Arc::new(AtomicBool::new(false));
 
-            let error = run(stop_flag, &Config::default(), Some(session.id.clone())).unwrap_err();
+            let error = run(
+                stop_flag,
+                &Config::default(),
+                Some(session.id.clone()),
+                false,
+                None,
+            )
+            .unwrap_err();
 
             assert!(matches!(
                 error,
