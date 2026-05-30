@@ -10362,13 +10362,12 @@
           }
         } else if (/not found on PATH|not found in PATH|not found in common install/i.test(msg)) {
           // The AI assistant needs an external agent CLI (Claude Code by
-          // default). It's OPTIONAL — recording and Minutes Madness work
-          // without it — so degrade with a calm, non-alarming note instead of
-          // a scary "Could not start" error for users who don't have it.
+          // default). It's OPTIONAL — the rest of the app works without it —
+          // so degrade with a calm, non-alarming note instead of a scary
+          // "Could not start" error for users who don't have it.
           console.info('Recall: assistant agent not installed (optional):', msg);
           recallLoading.querySelector('span').textContent =
-            'AI assistant is optional — install Claude Code to enable it. ' +
-            'Recording and Minutes Madness work without it.';
+            'AI assistant is optional; install Claude Code to enable it.';
         } else {
           console.error('Recall spawn:', e);
           recallLoading.querySelector('span').textContent = 'Could not start: ' + msg;
