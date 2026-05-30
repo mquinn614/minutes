@@ -1954,6 +1954,13 @@ fn main() {
             // Create main window on launch
             commands::seed_latest_retryable_output(&latest_output);
             show_main_window(app.handle());
+            // Minutes Madness prototype: land hosts directly in the game window
+            // on startup. The full Minutes main window still opens behind it (so
+            // all app machinery + the menu bar are available), but non-technical
+            // All-Hands hosts shouldn't have to hunt for "File → Minutes
+            // Madness…" — they get the bracket front-and-center. show_madness_
+            // window focuses it on top of main.
+            show_madness_window(app.handle());
             commands::spawn_permission_monitor(app.handle().clone());
 
             if minutes_core::jobs::active_job_count() > 0 {
