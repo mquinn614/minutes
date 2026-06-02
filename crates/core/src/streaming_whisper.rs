@@ -361,12 +361,15 @@ fn live_default_threads() -> i32 {
 /// default, padding shorter audio — so per-call encode cost is constant
 /// regardless of how much audio is actually buffered. For live streaming of
 /// short utterances that's mostly wasted compute. Sizing audio_ctx to the
-/// real buffer length (whisper.cpp #1855) recovers a ~3.4x speedup on short
-/// clips with no measured accuracy loss.
+/// real buffer length (whisper.cpp #1855) recovers a meaningful speedup on
+/// short clips with no measured accuracy loss.
 ///
 /// Formula: `(secs/30)*1500 + 128` padding, rounded up to a multiple of 64
-/// (whisper.cpp kernels prefer 64-aligned context), clamped to `[128, 1500]`.
+/// (whisper.cpp kernels prefer 64-aligned context), clamped to `[768, 1500]`.
 /// A buffer at/over the 30s window resolves to the full 1500 (no reduction).
+/// The 768 floor (not the audio's bare frame count) is deliberate: smaller
+/// contexts starve the decoder and trigger repetition loops on short live
+/// utterances. See the body for the full rationale.
 /// Collapse whisper repetition loops that occur WITHIN a single segment,
 /// e.g. `"Double-click, double-click, double-click, ..."` (×55) from one
 /// spoken phrase. `whisper_guard::clean_segments` handles repetition spread
@@ -421,11 +424,20 @@ fn audio_ctx_for_samples(n_samples: usize) -> i32 {
     // 1500 is the model's fixed n_audio_ctx (the full 30s window) and is NOT
     // 64-aligned — it's the hard ceiling. Anything that rounds to >= 1500 just
     // uses the full window (equivalent to the default). Reduced values stay
-    // 64-aligned for kernel efficiency, with a 128 floor.
+    // 64-aligned for kernel efficiency.
+    //
+    // Floor at 768, not 128: very small audio_ctx (we observed 192–256 on
+    // 1–2s buffers) starves the decoder of context and triggers repetition
+    // loops (one spoken phrase transcribed dozens of times). whisper.cpp
+    // guidance flags sub-768 as loop-prone. 768 is loop-resistant and, on the
+    // GPU backends Madness actually ships on (Vulkan/Metal), essentially free
+    // — encode cost is dominated by the GPU, not the context size. The
+    // aggressive sub-768 reduction only ever benefited rare CPU-only hosts,
+    // and the streaming dedup passes catch any residual loops regardless.
     if rounded >= 1500 {
         1500
     } else {
-        rounded.max(128)
+        rounded.max(768)
     }
 }
 
@@ -483,24 +495,24 @@ mod tests {
 
     #[test]
     fn audio_ctx_scales_with_buffer_and_clamps() {
-        // Results are in [128, 1500]; reduced values are 64-aligned, and the
+        // Results are in [768, 1500]; reduced values are 64-aligned, and the
         // 1500 ceiling (model's full n_audio_ctx) is the one allowed exception.
         for &samples in &[0usize, 16_000, 80_000, 240_000, 480_000, 960_000] {
             let ctx = audio_ctx_for_samples(samples);
-            assert!((128..=1500).contains(&ctx), "ctx {ctx} out of range");
+            assert!((768..=1500).contains(&ctx), "ctx {ctx} out of range");
             assert!(ctx == 1500 || ctx % 64 == 0, "ctx {ctx} not 64-aligned");
         }
-        // Short buffers get a small context (the whole point).
-        assert!(audio_ctx_for_samples(16_000) < 320, "1s should be small"); // ~256
-        assert!(audio_ctx_for_samples(80_000) < 512, "5s should be modest"); // ~384
+        // Short buffers floor at 768 (loop-resistant; smaller contexts induced
+        // whisper repetition loops on 1-2s utterances).
+        assert_eq!(audio_ctx_for_samples(0), 768, "empty floors at 768");
+        assert_eq!(audio_ctx_for_samples(16_000), 768, "1s floors at 768");
+        assert_eq!(audio_ctx_for_samples(80_000), 768, "5s floors at 768");
         // Monotonic: more audio → larger (or equal) context.
-        assert!(audio_ctx_for_samples(16_000) <= audio_ctx_for_samples(80_000));
-        assert!(audio_ctx_for_samples(80_000) <= audio_ctx_for_samples(240_000));
+        assert!(audio_ctx_for_samples(16_000) <= audio_ctx_for_samples(240_000));
+        assert!(audio_ctx_for_samples(240_000) <= audio_ctx_for_samples(480_000));
         // A full 30s+ window resolves to the max (no reduction).
         assert_eq!(audio_ctx_for_samples(16_000 * 30), 1500);
         assert_eq!(audio_ctx_for_samples(16_000 * 60), 1500);
-        // Empty buffer floors at the minimum, never zero/negative.
-        assert_eq!(audio_ctx_for_samples(0), 128);
     }
 
     #[test]
