@@ -241,24 +241,31 @@ impl StreamingWhisper {
             crate::live_timing::dropped_chunks()
         ));
 
-        // Extract text from all segments
+        // Extract per-segment text, then run whisper-guard's segment cleaning
+        // BEFORE joining. Whisper's decoder can loop, emitting the same phrase
+        // across many consecutive segments (observed: a single spoken "move the
+        // needle" transcribed as 38 repeated segments) — especially on short
+        // buffers with a small audio_ctx. The BATCH transcription path runs
+        // this cleaning; the streaming path historically did not, so raw
+        // repetition reached the live transcript and inflated Madness buzzword
+        // counts (one mention scored as 38). clean_segments collapses runs of
+        // 3+ similar consecutive segments to the first, matching batch's
+        // anti-hallucination behavior. (This is a core streaming/batch parity
+        // gap, not Madness-specific.)
         let num_segments = state.full_n_segments();
-        let mut text = String::new();
+        let mut segs: Vec<String> = Vec::with_capacity(num_segments.max(0) as usize);
         for i in 0..num_segments {
             if let Some(seg) = state.get_segment(i) {
                 if let Ok(t) = seg.to_str_lossy() {
                     let t = t.trim();
                     if !t.is_empty() {
-                        if !text.is_empty() {
-                            text.push(' ');
-                        }
-                        text.push_str(t);
+                        segs.push(t.to_string());
                     }
                 }
             }
         }
-
-        let text = text.trim().to_string();
+        let (segs, _clean_stats) = whisper_guard::segments::clean_segments(&segs);
+        let text = segs.join(" ").trim().to_string();
 
         // Skip if empty or identical to last partial (no new info)
         if text.is_empty() {
@@ -379,6 +386,24 @@ mod tests {
         let sw = StreamingWhisper::new(None);
         assert_eq!(sw.duration_secs(), 0.0);
         assert!(sw.audio_buffer.is_empty());
+    }
+
+    #[test]
+    fn clean_segments_collapses_whisper_repetition_loop() {
+        // Regression guard: whisper's decoder can loop, emitting one spoken
+        // phrase as many repeated segments (observed: a single "move the
+        // needle" transcribed as 38 repeats, which scored 38 in Madness).
+        // The streaming path runs clean_segments before joining; this asserts
+        // that pass collapses the loop so live buzzword counts stay accurate.
+        let looped: Vec<String> = std::iter::repeat("Move the needle.".to_string())
+            .take(38)
+            .collect();
+        let (cleaned, _) = whisper_guard::segments::clean_segments(&looped);
+        assert!(
+            cleaned.len() < 4,
+            "expected repetition loop collapsed, got {} segments",
+            cleaned.len()
+        );
     }
 
     #[test]
