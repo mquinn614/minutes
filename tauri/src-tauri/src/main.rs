@@ -455,51 +455,14 @@ fn maybe_run_process_queue_worker() -> Option<i32> {
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        win.show().ok();
-        win.set_focus().ok();
-        return;
-    }
-    let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        // Empty title hides the centered "Minutes" text in any native chrome.
-        // The in-app brand mark (italic m + recording dot) carries the identity.
-        .title("")
-        .inner_size(560.0, 700.0)
-        .min_inner_size(460.0, 520.0)
-        .transparent(true)
-        .content_protected(Config::load().privacy.hide_from_screen_share)
-        .focused(true);
-
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            // Keep this as a normal app window, but let the in-app header own the
-            // visual chrome instead of stacking below a separate gray title bar.
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(16.0, 16.0));
-    }
-
-    if let Ok(win) = builder.build() {
-        #[cfg(target_os = "macos")]
-        {
-            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-            apply_vibrancy(&win, NSVisualEffectMaterial::Sidebar, None, None).ok();
-        }
-        // Re-seed the tray appearance from the fresh window's theme. In
-        // normal flow CloseRequested hides instead of destroys (see
-        // on_window_event for "main"), so this branch is rare — but if
-        // the main window was ever destroyed and the system appearance
-        // flipped while it was absent, `ThemeChanged` never fired and the
-        // cached state is stale. Reseed + repaint here is idempotent
-        // when the cache is already correct (codex diff-review P2).
-        if let Some(state) = app.try_state::<TrayAppearanceState>() {
-            if let Ok(theme) = win.theme() {
-                state.set(TrayAppearance::from_theme(theme));
-                sync_tray_appearance(app);
-            }
-        }
-    }
+    // Minutes Madness fork: there is no separate "main" Minutes window. Every
+    // entry point that historically opened the core index.html UI (dock
+    // Reopen, single-instance relaunch, tray "Open", deep links) is redirected
+    // here to the Madness window, so the vestigial recording/search UI can
+    // never surface over the game. Slice 2a removed the setup() call site; this
+    // covers the rest. index.html stays in the bundle for now but is never
+    // shown — full removal is a later cleanup.
+    show_madness_window(app);
 }
 
 fn show_note_window(app: &tauri::AppHandle) {
