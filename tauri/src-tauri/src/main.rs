@@ -465,23 +465,6 @@ fn show_main_window(app: &tauri::AppHandle) {
     show_madness_window(app);
 }
 
-fn show_note_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("note") {
-        win.show().ok();
-        win.set_focus().ok();
-        return;
-    }
-    let _win = WebviewWindowBuilder::new(app, "note", WebviewUrl::App("note.html".into()))
-        .title("Add Note")
-        .inner_size(420.0, 260.0)
-        .resizable(false)
-        .content_protected(Config::load().privacy.hide_from_screen_share)
-        .always_on_top(true)
-        .center()
-        .focused(true)
-        .build();
-}
-
 fn show_madness_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("madness") {
         win.show().ok();
@@ -947,18 +930,12 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     };
 
     let file_menu = {
-        let open_item =
-            MenuItem::with_id(app, "app-open-main", "Open Minutes", true, Some("Cmd+O"))?;
-        let note_item =
-            MenuItem::with_id(app, "app-add-note", "Add Note…", true, Some("Cmd+Shift+N"))?;
-        let madness_item =
-            MenuItem::with_id(app, "app-madness", "Minutes Madness…", true, None::<&str>)?;
-        let list_item = MenuItem::with_id(
+        let open_item = MenuItem::with_id(
             app,
-            "app-open-meetings-folder",
-            "Open Meetings Folder",
+            "app-open-main",
+            "Open Minutes Madness",
             true,
-            None::<&str>,
+            Some("Cmd+O"),
         )?;
 
         #[cfg(target_os = "macos")]
@@ -966,24 +943,17 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             SubmenuBuilder::new(app, "File")
                 .item(&open_item)
                 .separator()
-                .item(&note_item)
-                .item(&madness_item)
-                .item(&list_item)
-                .separator()
                 .close_window()
                 .build()?
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let quit_item = MenuItem::with_id(app, "app-quit", "Quit Minutes", true, None::<&str>)?;
+            let quit_item =
+                MenuItem::with_id(app, "app-quit", "Quit Minutes Madness", true, None::<&str>)?;
 
             SubmenuBuilder::new(app, "File")
                 .item(&open_item)
-                .separator()
-                .item(&note_item)
-                .item(&madness_item)
-                .item(&list_item)
                 .separator()
                 .close_window()
                 .item(&quit_item)
@@ -1373,19 +1343,6 @@ fn main() {
             "app-open-main" => {
                 show_main_window(app);
             }
-            "app-add-note" => {
-                show_main_window(app);
-                show_note_window(app);
-            }
-            "app-madness" => {
-                show_madness_window(app);
-            }
-            "app-open-meetings-folder" => {
-                let meetings_dir = minutes_core::config::Config::load().output_dir;
-                if let Err(err) = commands::open_target(app, &meetings_dir.display().to_string()) {
-                    commands::show_user_notification(app, "Meetings", &err);
-                }
-            }
             "help-open-website" => {
                 if let Err(err) = commands::open_target(app, MINUTES_WEBSITE_URL) {
                     commands::show_user_notification(app, "Minutes Website", &err);
@@ -1536,7 +1493,6 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_filename("window-state.json")
-                .skip_initial_state("note")
                 .skip_initial_state("dictation-overlay")
                 .build(),
         )
@@ -1802,7 +1758,8 @@ fn main() {
             commands::maybe_show_palette_first_run_notice(app.handle());
 
             // Tray menu
-            let open_item = MenuItem::with_id(app, "open", "Open Minutes", true, None::<&str>)?;
+            let open_item =
+                MenuItem::with_id(app, "open", "Open Minutes Madness", true, None::<&str>)?;
             let sep0 = MenuItem::with_id(app, "sep0", "──────────", false, None::<&str>)?;
             let record_item = MenuItem::with_id(
                 app,
@@ -1846,9 +1803,6 @@ fn main() {
             )?;
             let mic_mute_item_ref = mic_mute_item.clone();
             let sep = MenuItem::with_id(app, "sep1", "──────────", false, None::<&str>)?;
-            let note_item = MenuItem::with_id(app, "note", "Add Note...", true, None::<&str>)?;
-            let list_item =
-                MenuItem::with_id(app, "list", "Open Meetings Folder", true, None::<&str>)?;
             let paste_summary_item = MenuItem::with_id(
                 app,
                 "paste-summary",
@@ -1883,7 +1837,8 @@ fn main() {
                 None::<&str>,
             )?;
             let sep2 = MenuItem::with_id(app, "sep2", "──────────", false, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit Minutes", true, None::<&str>)?;
+            let quit_item =
+                MenuItem::with_id(app, "quit", "Quit Minutes Madness", true, None::<&str>)?;
 
             let menu = Menu::new(app)?;
             menu.append_items(&[
@@ -1894,8 +1849,6 @@ fn main() {
                 &stop_item,
                 &mic_mute_item,
                 &sep,
-                &note_item,
-                &list_item,
             ])?;
             if commands::supports_tray_artifact_copy() {
                 menu.append_items(&[&paste_summary_item, &paste_transcript_item])?;
@@ -2082,17 +2035,6 @@ fn main() {
                                 "Mute My Mic (Recording Only)"
                             };
                             mic_mute_item_ref.set_text(label).ok();
-                        }
-                        "note" => {
-                            show_note_window(app);
-                        }
-                        "list" => {
-                            let meetings_dir = minutes_core::config::Config::load().output_dir;
-                            if let Err(err) =
-                                commands::open_target(app, &meetings_dir.display().to_string())
-                            {
-                                commands::show_user_notification(app, "Meetings", &err);
-                            }
                         }
                         "paste-summary" | "paste-transcript" => {
                             let target_app = commands::frontmost_application_name();
