@@ -10862,6 +10862,41 @@ mod tests {
         });
     }
 
+    #[test]
+    fn probe_cache_round_trips_in_probe_subdir_not_games_dir() {
+        with_temp_home(|_| {
+            let value = serde_json::json!({
+                "version": PROBE_CACHE_VERSION,
+                "measured_at": chrono::Local::now().to_rfc3339(),
+                "live_config": { "window_secs": 4 },
+            });
+
+            write_probe_cache("base", "metal", &value).unwrap();
+
+            // The cache lands in the hidden `.probe/` subdir…
+            assert!(probe_cache_dir().join("probe-base-metal.json").exists());
+            // …and never directly in the games dir, so `minutes madness list`
+            // stays bracket-only.
+            assert!(!madness_dir().join("probe-base-metal.json").exists());
+
+            // It reads back within TTL, tagged `cached: true`, payload intact.
+            let loaded = read_probe_cache("base", "metal").expect("fresh cache should load");
+            assert_eq!(loaded.get("cached").and_then(|c| c.as_bool()), Some(true));
+            assert_eq!(
+                loaded
+                    .pointer("/live_config/window_secs")
+                    .and_then(|w| w.as_u64()),
+                Some(4)
+            );
+
+            // End-to-end: with a real bracket alongside the relocated cache,
+            // the core lister returns only the bracket slug.
+            std::fs::write(madness_dir().join("q3-all-hands.json"), "{}").unwrap();
+            let slugs = minutes_core::madness::list_games().unwrap();
+            assert_eq!(slugs, vec!["q3-all-hands".to_string()]);
+        });
+    }
+
     fn hash_file_bytes(path: &Path) -> u64 {
         let bytes = std::fs::read(path).expect("meeting file must exist");
         let mut hasher = DefaultHasher::new();
@@ -13269,8 +13304,15 @@ fn madness_dir() -> PathBuf {
     Config::minutes_dir().join("madness")
 }
 
+/// Directory holding the live-config probe cache. A hidden subdirectory of the
+/// madness dir so the games dir itself contains only bracket `*.json` files and
+/// `minutes madness list` never surfaces a stray `probe-*` entry.
+fn probe_cache_dir() -> PathBuf {
+    madness_dir().join(".probe")
+}
+
 fn probe_cache_path(model: &str, backend: &str) -> PathBuf {
-    madness_dir().join(format!("probe-{}-{}.json", model, backend))
+    probe_cache_dir().join(format!("probe-{}-{}.json", model, backend))
 }
 
 /// Return a fresh cached probe result if one exists and is still within TTL,
@@ -13300,9 +13342,8 @@ fn read_probe_cache(model: &str, backend: &str) -> Option<serde_json::Value> {
 }
 
 fn write_probe_cache(model: &str, backend: &str, value: &serde_json::Value) -> io::Result<()> {
-    std::fs::create_dir_all(madness_dir())?;
-    let bytes =
-        serde_json::to_vec_pretty(value).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    std::fs::create_dir_all(probe_cache_dir())?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
     std::fs::write(probe_cache_path(model, backend), bytes)
 }
 
@@ -13314,8 +13355,9 @@ fn write_probe_cache(model: &str, backend: &str, value: &serde_json::Value) -> i
 /// [`minutes_core::live_autotune::choose`] across the canonical
 /// snappiest→safest ladder. The panel calls this once before
 /// `startRecording`; results are cached per (model, backend) at
-/// `~/.minutes/madness/probe-{model}-{backend}.json` so repeat sessions on
-/// the same host skip the ~5–10s probe.
+/// `~/.minutes/madness/.probe/probe-{model}-{backend}.json` so repeat sessions
+/// on the same host skip the ~5–10s probe. The `.probe/` subdir keeps the
+/// games dir bracket-only so `minutes madness list` stays clean.
 ///
 /// When `model` is None we use `config.live_transcript.model` (empty → `base`).
 /// Passing `model = Some("tiny")` is how the panel re-probes for an escalated

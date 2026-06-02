@@ -488,6 +488,15 @@ pub fn list_games() -> Result<Vec<String>, MadnessError> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                // Ignore the live-config probe cache. Current builds park it in
+                // the `.probe/` subdirectory (which read_dir yields as a dir,
+                // not a `*.json` file), but older builds wrote
+                // `probe-{model}-{backend}.json` straight into the games dir;
+                // skip those legacy stragglers so they never masquerade as a
+                // bracket slug in `minutes madness list`.
+                if stem.starts_with("probe-") {
+                    continue;
+                }
                 slugs.push(stem.to_string());
             }
         }
@@ -1212,5 +1221,44 @@ mod tests {
         assert!(text.contains("leverage synergy"));
         assert!(text.contains("Circle back"));
         assert!(!text.contains("blah"));
+    }
+
+    #[test]
+    fn list_games_ignores_probe_cache() {
+        // `games_dir()` resolves under $HOME/.minutes/madness, so point HOME at
+        // a temp dir to isolate this from the real games directory.
+        let _lock = crate::test_home_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+
+        let games = games_dir();
+        fs::create_dir_all(&games).unwrap();
+        // Two genuine brackets.
+        fs::write(games.join("q3-all-hands.json"), "{}").unwrap();
+        fs::write(games.join("my-bracket.json"), "{}").unwrap();
+        // Legacy probe cache an older build wrote into the games dir directly.
+        fs::write(games.join("probe-small-metal.json"), "{}").unwrap();
+        // Current probe cache location: a hidden `.probe/` subdir.
+        fs::create_dir_all(games.join(".probe")).unwrap();
+        fs::write(games.join(".probe").join("probe-base-metal.json"), "{}").unwrap();
+        // A backup sidecar (non-`json` extension) — already filtered by ext.
+        fs::write(games.join("q3-all-hands.json.bak"), "{}").unwrap();
+
+        let slugs = list_games();
+
+        // Restore HOME before asserting so a failure doesn't leak the temp dir
+        // into sibling tests sharing the env lock.
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+
+        // Only the real brackets are listed; the probe cache (legacy file and
+        // `.probe/` subdir) and the `.bak` sidecar are all ignored.
+        assert_eq!(
+            slugs.unwrap(),
+            vec!["my-bracket".to_string(), "q3-all-hands".to_string()]
+        );
     }
 }
