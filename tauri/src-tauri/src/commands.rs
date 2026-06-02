@@ -8,7 +8,6 @@ use minutes_core::{CaptureMode, Config, ContentType};
 use reqwest::header::{ACCEPT, CONTENT_LENGTH};
 use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
@@ -63,12 +62,6 @@ pub struct AppState {
     /// Set when a hotkey press lands in the `Closing` state. The close path
     /// drains this flag on completion and re-opens the palette if it was set.
     pub palette_reopen_pending: Arc<AtomicBool>,
-    /// Staged payloads for meeting-prompt overlays, keyed by an opaque token
-    /// passed via URL query (`?t=<token>`). Each overlay consumes exactly one
-    /// entry on load. Keyed rather than single-slot to avoid a race when a
-    /// second prompt fires before the first overlay's JS has consumed its
-    /// payload — see `show_meeting_prompt` in main.rs.
-    pub pending_meeting_prompts: Arc<Mutex<HashMap<u64, MeetingPromptData>>>,
     /// `true` iff the currently-active recording was started by a user click
     /// on the call detection banner. Scopes `stop_when_call_ends` so manual
     /// `cmd_start_recording` sessions are never auto-stopped.
@@ -981,33 +974,6 @@ impl From<String> for UpdateInstallError {
 impl From<&str> for UpdateInstallError {
     fn from(value: &str) -> Self {
         Self::Message(value.to_string())
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MeetingPromptData {
-    pub title: String,
-    pub minutes_until: i64,
-    pub url: Option<String>,
-}
-
-/// Returns the pending meeting-prompt payload for the given token (and clears
-/// it). Called by the overlay window on load. Returning `None` means the
-/// token was already consumed, the staging path failed, or the window was
-/// opened without a matching token — the overlay should close rather than
-/// render a phantom "Meeting" prompt with no context.
-#[tauri::command]
-pub fn cmd_get_meeting_prompt(
-    token: u64,
-    state: tauri::State<'_, AppState>,
-) -> Option<MeetingPromptData> {
-    match state.pending_meeting_prompts.lock() {
-        Ok(mut map) => map.remove(&token),
-        Err(e) => {
-            eprintln!("[calendar] pending_meeting_prompts mutex poisoned: {}", e);
-            None
-        }
     }
 }
 
@@ -7193,6 +7159,10 @@ fn vocabulary_person_key(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Returns upcoming calendar events as JSON. NOT invoked at launch in the
+/// Minutes Madness fork (the startup tray poll was removed) — this remains
+/// only as the on-demand bridge for the command palette's "Show upcoming
+/// meetings" action, which is the sole remaining calendar access point.
 #[tauri::command]
 pub async fn cmd_upcoming_meetings() -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(|| {
@@ -8000,7 +7970,6 @@ mod tests {
             palette_shortcut: Arc::new(Mutex::new("CmdOrCtrl+Shift+K".into())),
             palette_lifecycle: Arc::new(Mutex::new(PaletteLifecycle::default())),
             palette_reopen_pending: Arc::new(AtomicBool::new(false)),
-            pending_meeting_prompts: Arc::new(Mutex::new(HashMap::new())),
             recording_started_by_call_detect: Arc::new(AtomicBool::new(false)),
             call_end_countdown_cancel: Arc::new(AtomicBool::new(false)),
             call_end_countdown_active: Arc::new(AtomicBool::new(false)),

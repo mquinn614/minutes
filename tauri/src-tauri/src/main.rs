@@ -2,10 +2,9 @@
 
 use minutes_core::Config;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::{c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{
     menu::{Menu, MenuItem, SubmenuBuilder},
@@ -1122,226 +1121,6 @@ fn notify_update_available(
     );
 }
 
-// ── Calendar items in tray menu ──────────────────────────────
-
-const MAX_CALENDAR_ITEMS: usize = 3;
-const CALENDAR_REFRESH_SECS: u64 = 60;
-const CALENDAR_LOOKAHEAD_MINUTES: u32 = 240; // 4 hours
-const MEETING_NOTIFY_MINUTES: i64 = 3; // Show prompt this many minutes before
-
-struct CalendarMenuState {
-    items: Vec<MenuItem<tauri::Wry>>,
-    separator: Option<MenuItem<tauri::Wry>>,
-    /// Event titles we've already sent a notification for (prevents repeat alerts)
-    notified: std::collections::HashSet<String>,
-}
-
-fn format_calendar_label(event: &minutes_core::calendar::CalendarEvent) -> String {
-    if event.minutes_until <= 0 {
-        format!("{} · now", event.title)
-    } else if event.minutes_until == 1 {
-        format!("{} · in 1 min", event.title)
-    } else if event.minutes_until >= 60 {
-        let h = event.minutes_until / 60;
-        let m = event.minutes_until % 60;
-        if m == 0 {
-            format!("{} · in {}h", event.title, h)
-        } else {
-            format!("{} · in {}h {}m", event.title, h, m)
-        }
-    } else {
-        format!("{} · in {} min", event.title, event.minutes_until)
-    }
-}
-
-/// Show a floating overlay prompt for an upcoming meeting.
-/// The overlay has "Join & Record" (if URL) or "Record" + "Dismiss" buttons.
-fn show_meeting_prompt(app: &tauri::AppHandle, event: &minutes_core::calendar::CalendarEvent) {
-    // Don't show if already recording
-    if let Some(state) = app.try_state::<commands::AppState>() {
-        if state.recording.load(Ordering::Relaxed) {
-            return;
-        }
-    }
-
-    // Close any existing prompt window
-    if let Some(win) = app.get_webview_window("meeting-prompt") {
-        win.close().ok();
-    }
-
-    // Stage the payload keyed by a monotonic token. The overlay reads its
-    // token from the URL query string and calls `cmd_get_meeting_prompt` to
-    // drain exactly its own entry. Keying avoids a race where back-to-back
-    // `show_meeting_prompt` calls (two meetings firing in the same
-    // `refresh_calendar_items` tick) would let the first overlay's still-in-
-    // flight JS consume the second's payload.
-    //
-    // Why a query string, not a fragment: the previous fragment-based
-    // approach tripped over Tauri's URL normalizer double-encoding percent
-    // sequences (space → `%20` → `%2520`), so titles with spaces rendered as
-    // `X1%20payout`. A bare u64 token has no characters that need encoding.
-    static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let token = TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let Some(state) = app.try_state::<commands::AppState>() else {
-        eprintln!("[calendar] AppState missing; skipping meeting prompt");
-        return;
-    };
-    match state.pending_meeting_prompts.lock() {
-        Ok(mut map) => {
-            // Cap the map to bound memory if some overlay's JS never
-            // consumes (e.g. window build failed below, or webview crashed
-            // before invoke). Evict lowest token IDs first — they're oldest.
-            const MAX_PENDING: usize = 16;
-            while map.len() >= MAX_PENDING {
-                if let Some(&oldest) = map.keys().min() {
-                    map.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
-            map.insert(
-                token,
-                commands::MeetingPromptData {
-                    title: event.title.clone(),
-                    minutes_until: event.minutes_until,
-                    url: event.url.clone().filter(|u| !u.is_empty()),
-                },
-            );
-        }
-        Err(e) => {
-            eprintln!(
-                "[calendar] pending_meeting_prompts mutex poisoned, skipping stage: {}",
-                e
-            );
-            return;
-        }
-    }
-
-    // Position: top-right of main screen, below menu bar
-    let (pos_x, pos_y) = get_top_right_position(380.0, 240.0);
-
-    let url = format!("meeting-prompt.html?t={}", token);
-    match WebviewWindowBuilder::new(app, "meeting-prompt", WebviewUrl::App(url.into()))
-        .title("Upcoming Meeting")
-        .inner_size(380.0, 240.0)
-        .position(pos_x, pos_y)
-        .resizable(false)
-        .decorations(false)
-        .content_protected(Config::load().privacy.hide_from_screen_share)
-        .always_on_top(true)
-        .focused(true)
-        .skip_taskbar(true)
-        .build()
-    {
-        Ok(_) => eprintln!("[calendar] meeting prompt shown for: {}", event.title),
-        Err(e) => {
-            eprintln!("[calendar] failed to show meeting prompt: {}", e);
-            // Window never opened, so no JS will consume the entry. Drop it
-            // now rather than waiting for the MAX_PENDING eviction.
-            if let Ok(mut map) = state.pending_meeting_prompts.lock() {
-                map.remove(&token);
-            }
-        }
-    }
-}
-
-/// Calculate position for top-right placement, 16px from screen edge.
-fn get_top_right_position(width: f64, height: f64) -> (f64, f64) {
-    let _ = height;
-    // Default to a reasonable position; Tauri doesn't expose screen size easily
-    // from a non-window context, so we use a heuristic for common displays.
-    // The window will be placed at x=screen_width - window_width - 16, y=38 (below menu bar).
-    // For a 1440px-wide MacBook display at 2x: logical width ~1440
-    // For a 1920px-wide external: logical width ~1920
-    // We'll use 1440 as a safe default — the window stays visible on any Mac screen.
-    let screen_width = 1440.0;
-    let x = screen_width - width - 16.0;
-    let y = 38.0; // Below the macOS menu bar
-    (x, y)
-}
-
-fn refresh_calendar_items(
-    app: &tauri::AppHandle,
-    menu: &Menu<tauri::Wry>,
-    state: &std::sync::Mutex<CalendarMenuState>,
-) {
-    let mut state = match state.lock() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    // Remove old items from menu
-    for item in state.items.drain(..) {
-        menu.remove(&item).ok();
-    }
-    if let Some(sep) = state.separator.take() {
-        menu.remove(&sep).ok();
-    }
-
-    // Query upcoming events
-    let all_events = minutes_core::calendar::upcoming_events(CALENDAR_LOOKAHEAD_MINUTES);
-    eprintln!(
-        "[calendar] queried {} upcoming events ({}min lookahead)",
-        all_events.len(),
-        CALENDAR_LOOKAHEAD_MINUTES
-    );
-    for e in &all_events {
-        eprintln!("[calendar]   {} — in {} min", e.title, e.minutes_until);
-    }
-    // Show meeting prompt overlay for meetings starting in ≤ MEETING_NOTIFY_MINUTES (once per event)
-    for e in &all_events {
-        if e.minutes_until >= 0
-            && e.minutes_until <= MEETING_NOTIFY_MINUTES
-            && !state.notified.contains(&e.title)
-        {
-            show_meeting_prompt(app, e);
-            state.notified.insert(e.title.clone());
-            eprintln!(
-                "[calendar] prompted: {} (in {} min)",
-                e.title, e.minutes_until
-            );
-        }
-    }
-
-    // Clean up old notifications (events that have passed)
-    state.notified.retain(|title| {
-        all_events
-            .iter()
-            .any(|e| &e.title == title && e.minutes_until >= -5)
-    });
-
-    let events: Vec<_> = all_events
-        .into_iter()
-        .filter(|e| e.minutes_until >= 0)
-        .take(MAX_CALENDAR_ITEMS)
-        .collect();
-
-    if events.is_empty() {
-        return;
-    }
-
-    // Insert at position 2 (after "Open Minutes" + first separator)
-    for (i, event) in events.iter().enumerate() {
-        let label = format_calendar_label(event);
-        if let Ok(item) = MenuItem::with_id(app, format!("cal-{}", i), &label, true, None::<&str>) {
-            if menu.insert(&item, 2 + i).is_ok() {
-                state.items.push(item);
-            }
-        }
-    }
-
-    // Separator after calendar items
-    if !state.items.is_empty() {
-        if let Ok(sep) = MenuItem::with_id(app, "cal-sep", "──────────", false, None::<&str>)
-        {
-            if menu.insert(&sep, 2 + state.items.len()).is_ok() {
-                state.separator = Some(sep);
-            }
-        }
-    }
-}
-
 fn should_refresh_meetings_for_paths(paths: &[std::path::PathBuf]) -> bool {
     paths.iter().any(|path| {
         path.extension()
@@ -1803,7 +1582,6 @@ fn main() {
             tauri_plugin_window_state::Builder::default()
                 .with_filename("window-state.json")
                 .skip_initial_state("note")
-                .skip_initial_state("meeting-prompt")
                 .skip_initial_state("dictation-overlay")
                 .build(),
         )
@@ -1851,7 +1629,6 @@ fn main() {
             palette_shortcut: palette_shortcut.clone(),
             palette_lifecycle: palette_lifecycle.clone(),
             palette_reopen_pending: palette_reopen_pending.clone(),
-            pending_meeting_prompts: Arc::new(Mutex::new(HashMap::new())),
             recording_started_by_call_detect: recording_started_by_call_detect.clone(),
             call_end_countdown_cancel: call_end_countdown_cancel.clone(),
             call_end_countdown_active: call_end_countdown_active.clone(),
@@ -2068,13 +1845,6 @@ fn main() {
             }
 
             commands::maybe_show_palette_first_run_notice(app.handle());
-
-            // Calendar state for dynamic tray menu items
-            let cal_state = Arc::new(std::sync::Mutex::new(CalendarMenuState {
-                items: Vec::new(),
-                separator: None,
-                notified: std::collections::HashSet::new(),
-            }));
 
             // Tray menu
             let open_item = MenuItem::with_id(app, "open", "Open Minutes", true, None::<&str>)?;
@@ -2433,37 +2203,6 @@ fn main() {
                         "quit" => {
                             request_clean_exit(app, 0);
                         }
-                        // Calendar event items — start recording on click.
-                        // Mirrors the "record" arm exactly; enabled-state flips
-                        // flow through sync_tray_state, not local set_enabled
-                        // calls (issue #223 / codex diff-review attack #8).
-                        "cal-0" | "cal-1" | "cal-2" => {
-                            let app_state = app.state::<commands::AppState>();
-                            if commands::recording_active(&recording)
-                                || app_state.starting.load(Ordering::Relaxed)
-                            {
-                                return;
-                            }
-                            rec_item.set_text("Starting...").ok();
-                            let app_handle = app.clone();
-                            let ri = rec_item.clone();
-                            std::thread::spawn(move || {
-                                let app_for_launch = app_handle.clone();
-                                let state = app_handle.state::<commands::AppState>();
-                                let _ = commands::launch_recording(
-                                    app_for_launch,
-                                    &state,
-                                    minutes_core::CaptureMode::Meeting,
-                                    None,
-                                    false,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                );
-                                ri.set_text("Start Recording").ok();
-                            });
-                        }
                         _ => {}
                     }
                 })
@@ -2549,49 +2288,9 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             });
 
-            // Calendar items in tray menu — refresh every minute
-            // Delay first refresh so the app window is interactive before
-            // osascript Calendar queries block the main-thread menu updates.
-            if commands::supports_calendar_integration() && startup_config.calendar.enabled {
-                let app_cal = app.handle().clone();
-                let menu_cal = menu.clone();
-                let cal_timer = cal_state.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    let mut consecutive_timeouts: u32 = 0;
-                    let mut backoff_secs: u64 = 300; // starts at 5 min
-                    loop {
-                        // Circuit breaker: back off with escalating delays.
-                        // Calendar.app can hang on CalDAV sync or TCC prompts.
-                        // After 2 failures, back off. Each cycle doubles the
-                        // backoff (5 min → 10 min → 20 min, capped at 30 min).
-                        if consecutive_timeouts >= 2 {
-                            eprintln!(
-                                "[calendar] {} consecutive timeouts, backing off {}s",
-                                consecutive_timeouts, backoff_secs
-                            );
-                            std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
-                            backoff_secs = (backoff_secs * 2).min(1800); // cap at 30 min
-                                                                         // Don't reset counter — one more failure keeps escalating
-                        }
-
-                        let start = std::time::Instant::now();
-                        refresh_calendar_items(&app_cal, &menu_cal, &cal_timer);
-                        let elapsed = start.elapsed();
-
-                        // Subprocess timeout is 3s; anything over 2s means Calendar.app
-                        // is unhealthy or hung.
-                        if elapsed >= std::time::Duration::from_secs(2) {
-                            consecutive_timeouts += 1;
-                        } else {
-                            consecutive_timeouts = 0;
-                            backoff_secs = 300; // reset backoff on success
-                        }
-
-                        std::thread::sleep(std::time::Duration::from_secs(CALENDAR_REFRESH_SECS));
-                    }
-                });
-            }
+            // Calendar tray integration removed in the Minutes Madness fork —
+            // the game never queries Calendar, so no EventKit TCC prompt fires
+            // on launch (slice 3: mic + system-audio permissions only).
 
             Ok(())
         })
@@ -2696,7 +2395,6 @@ fn main() {
             commands::cmd_needs_setup,
             commands::cmd_download_model,
             commands::cmd_mark_activation_nudge_shown,
-            commands::cmd_upcoming_meetings,
             commands::cmd_get_settings,
             commands::cmd_warm_parakeet,
             commands::cmd_openai_compatible_secret_status,
@@ -2711,7 +2409,6 @@ fn main() {
             commands::cmd_vault_setup,
             commands::cmd_vault_unlink,
             commands::cmd_open_meeting_url,
-            commands::cmd_get_meeting_prompt,
             commands::cmd_start_dictation,
             commands::cmd_stop_dictation,
             commands::cmd_dismiss_dictation_overlay,
