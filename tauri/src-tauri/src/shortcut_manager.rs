@@ -70,24 +70,19 @@ pub struct ShortcutStatus {
 const HOLD_THRESHOLD_MS: u64 = 300;
 const MIN_CAPTURE_DURATION_MS: u64 = 400;
 
-/// macOS virtual keycodes that require the native CGEventTap backend
-/// because Carbon RegisterEventHotKey cannot intercept them.
-const NATIVE_KEYCODES: &[i64] = &[
-    57, // Caps Lock
-    63, // fn/Globe
-];
-
 // ── Classification ───────────────────────────────────────────
 
-/// Determine which backend a shortcut needs based on its keycode.
-/// Keycodes in NATIVE_KEYCODES require CGEventTap (Input Monitoring).
-/// Keycode -1 means "standard combo, no specific keycode."
-pub fn classify_shortcut(keycode: i64) -> ShortcutBackend {
-    if NATIVE_KEYCODES.contains(&keycode) {
-        ShortcutBackend::Native
-    } else {
-        ShortcutBackend::Standard
-    }
+/// Determine which backend a shortcut uses.
+///
+/// Minutes Madness neutralizes the native CGEventTap backend: every shortcut
+/// is classified `Standard` (Carbon RegisterEventHotKey via the global-shortcut
+/// plugin), which needs no permissions. Because `register()` only reaches the
+/// Native (CGEventTap) path when this returns `Native`, the app never starts a
+/// `HotkeyMonitor` and so can never request Input Monitoring. Raw-key shortcuts
+/// (Caps Lock / fn, keycodes 57 / 63) are therefore unsupported in the fork;
+/// `keycode` is kept for signature compatibility but no longer routes.
+pub fn classify_shortcut(_keycode: i64) -> ShortcutBackend {
+    ShortcutBackend::Standard
 }
 
 // ── State Machine ────────────────────────────────────────────
@@ -897,13 +892,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_caps_lock_as_native() {
-        assert_eq!(classify_shortcut(57), ShortcutBackend::Native);
+    fn raw_key_caps_lock_classifies_as_standard_in_fork() {
+        // Madness neutralizes the Native CGEventTap backend, so even keycodes
+        // that used to require Input Monitoring (Caps Lock = 57, fn = 63)
+        // classify as Standard and never start a HotkeyMonitor.
+        assert_eq!(classify_shortcut(57), ShortcutBackend::Standard);
     }
 
     #[test]
-    fn classify_fn_as_native() {
-        assert_eq!(classify_shortcut(63), ShortcutBackend::Native);
+    fn raw_key_fn_classifies_as_standard_in_fork() {
+        assert_eq!(classify_shortcut(63), ShortcutBackend::Standard);
     }
 
     #[test]
