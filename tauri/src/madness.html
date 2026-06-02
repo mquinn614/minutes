@@ -335,6 +335,7 @@
     <h1>Minutes <span style="font-style:italic">Madness</span></h1>
     <span class="spacer"></span>
     <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Modify Buzzwords</button>
+    <button id="audio-btn" title="Choose which microphone to record from">🎙 Audio</button>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
     <button id="transcript-btn" title="Score against a transcript file or pasted text. No recording needed.">Transcript Mode</button>
     <button id="players-btn" title="Invite players and import their picks">Players</button>
@@ -397,6 +398,23 @@
         <div class="diag" id="import-msg"></div>
       </div>
       <div class="actions"><a id="players-close">Close</a></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="audio-modal">
+    <div class="modal wide">
+      <h3>Audio</h3>
+      <p>Choose the microphone Madness records from. For an in-person all-hands,
+        pick the mic or room device that hears the speakers; for a virtual call,
+        pick the input your meeting audio comes through.</p>
+      <div class="step">
+        <p><b>Input device</b></p>
+        <select id="audio-device-picker" class="settings-field" style="width:100%">
+          <option value="">System default</option>
+        </select>
+        <div class="diag" id="audio-device-msg"></div>
+      </div>
+      <div class="actions"><a id="audio-close">Close</a></div>
     </div>
   </div>
 
@@ -1565,6 +1583,56 @@
       document.getElementById('import-msg').textContent = '';
       document.getElementById('players-modal').classList.add('show');
     }
+
+    // ── Audio (microphone selection) ──────────────────────────
+    // Surfaces the recording input device picker inside Madness so hosts
+    // never need the main Minutes window for audio setup. Reuses the core
+    // backend: cmd_list_devices enumerates inputs, cmd_set_setting persists
+    // the choice to config.recording.device, which the live recording path
+    // reads at capture time.
+    async function loadAudioDevices() {
+      const picker = document.getElementById('audio-device-picker');
+      const msg = document.getElementById('audio-device-msg');
+      try {
+        const result = await invoke('cmd_list_devices');
+        const entries = Array.isArray(result.entries) ? result.entries : [];
+        const configured = result.configured_device || '';
+        picker.innerHTML = '<option value="">System default</option>';
+        for (const e of entries) {
+          const opt = document.createElement('option');
+          opt.value = e.name;
+          opt.textContent = e.label || e.name;
+          picker.appendChild(opt);
+        }
+        picker.value = configured;
+        msg.textContent = '';
+      } catch (e) {
+        msg.style.color = 'var(--accent)';
+        msg.textContent = 'Could not list audio devices: ' + e;
+      }
+    }
+
+    function openAudioModal() {
+      loadAudioDevices();
+      document.getElementById('audio-modal').classList.add('show');
+    }
+
+    document.getElementById('audio-btn').addEventListener('click', openAudioModal);
+    document.getElementById('audio-close').addEventListener('click', () => {
+      document.getElementById('audio-modal').classList.remove('show');
+    });
+    document.getElementById('audio-device-picker').addEventListener('change', async (e) => {
+      const msg = document.getElementById('audio-device-msg');
+      const label = e.target.selectedOptions[0] ? e.target.selectedOptions[0].textContent : e.target.value;
+      try {
+        await invoke('cmd_set_setting', { section: 'recording', key: 'device', value: e.target.value || '' });
+        msg.style.color = 'var(--text-secondary)';
+        msg.textContent = e.target.value ? ('Recording from: ' + label) : 'Using system default input.';
+      } catch (err) {
+        msg.style.color = 'var(--accent)';
+        msg.textContent = 'Could not save device: ' + err;
+      }
+    });
 
     async function importPicks() {
       const msg = document.getElementById('import-msg');
