@@ -265,7 +265,12 @@ impl StreamingWhisper {
             }
         }
         let (segs, _clean_stats) = whisper_guard::segments::clean_segments(&segs);
-        let text = segs.join(" ").trim().to_string();
+        // clean_segments collapses repetition across SEPARATE segments, but
+        // whisper can also loop WITHIN a single segment
+        // ("Double-click, double-click, double-click, ..." x55 from one
+        // spoken phrase). Segment-level dedup sees that as one segment and
+        // passes it through, so collapse intra-segment clause repetition too.
+        let text = collapse_repeated_clauses(&segs.join(" ")).trim().to_string();
 
         // Skip if empty or identical to last partial (no new info)
         if text.is_empty() {
@@ -362,6 +367,53 @@ fn live_default_threads() -> i32 {
 /// Formula: `(secs/30)*1500 + 128` padding, rounded up to a multiple of 64
 /// (whisper.cpp kernels prefer 64-aligned context), clamped to `[128, 1500]`.
 /// A buffer at/over the 30s window resolves to the full 1500 (no reduction).
+/// Collapse whisper repetition loops that occur WITHIN a single segment,
+/// e.g. `"Double-click, double-click, double-click, ..."` (×55) from one
+/// spoken phrase. `whisper_guard::clean_segments` handles repetition spread
+/// across separate segments, but not loops packed into one segment's text,
+/// which is what reaches the live transcript on short utterances and inflates
+/// Madness buzzword counts.
+///
+/// Splits on clause delimiters (`.`, `,`, `;`), and collapses any run of 3+
+/// consecutive clauses that normalize to the same text down to a single copy.
+/// The 3+ threshold matches `dedup_segments`, so genuine short repetition
+/// ("very, very") is preserved. If no run is collapsed the original text is
+/// returned verbatim, so non-looping transcripts are never reformatted.
+fn collapse_repeated_clauses(text: &str) -> String {
+    let normalize =
+        |s: &str| s.trim().trim_end_matches(['.', ',', ';', '!', '?', ' ']).to_lowercase();
+    let clauses: Vec<&str> = text
+        .split(['.', ',', ';'])
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    if clauses.len() < 3 {
+        return text.to_string();
+    }
+    let mut out: Vec<&str> = Vec::with_capacity(clauses.len());
+    let mut collapsed = false;
+    let mut i = 0;
+    while i < clauses.len() {
+        let norm = normalize(clauses[i]);
+        let mut j = i + 1;
+        while j < clauses.len() && normalize(clauses[j]) == norm {
+            j += 1;
+        }
+        if j - i >= 3 {
+            out.push(clauses[i]); // collapse the run to one copy
+            collapsed = true;
+        } else {
+            out.extend_from_slice(&clauses[i..j]);
+        }
+        i = j;
+    }
+    if collapsed {
+        out.join(", ")
+    } else {
+        text.to_string()
+    }
+}
+
 fn audio_ctx_for_samples(n_samples: usize) -> i32 {
     let audio_secs = n_samples as f32 / 16_000.0;
     let raw = (audio_secs / 30.0) * 1500.0 + 128.0;
@@ -386,6 +438,29 @@ mod tests {
         let sw = StreamingWhisper::new(None);
         assert_eq!(sw.duration_secs(), 0.0);
         assert!(sw.audio_buffer.is_empty());
+    }
+
+    #[test]
+    fn collapse_repeated_clauses_kills_intra_segment_loop() {
+        // Regression: whisper looped one spoken "double-click" into 55 comma-
+        // separated repeats inside a SINGLE segment, which scored 55. Clause
+        // collapse must reduce it to one mention.
+        let looped = std::iter::repeat("double-click")
+            .take(55)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let out = collapse_repeated_clauses(&looped);
+        assert_eq!(
+            out.to_lowercase().matches("double-click").count(),
+            1,
+            "expected one mention after collapse, got: {out}"
+        );
+        // Non-looping text is returned unchanged (no reformatting).
+        let normal = "Let's circle back on synergy and bandwidth.";
+        assert_eq!(collapse_repeated_clauses(normal), normal);
+        // Genuine short repetition (< 3) is preserved.
+        let short = "very, very good";
+        assert_eq!(collapse_repeated_clauses(short), short);
     }
 
     #[test]
