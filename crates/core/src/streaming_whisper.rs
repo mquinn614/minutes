@@ -270,7 +270,9 @@ impl StreamingWhisper {
         // ("Double-click, double-click, double-click, ..." x55 from one
         // spoken phrase). Segment-level dedup sees that as one segment and
         // passes it through, so collapse intra-segment clause repetition too.
-        let text = collapse_repeated_clauses(&segs.join(" ")).trim().to_string();
+        let text = collapse_repeated_clauses(&segs.join(" "))
+            .trim()
+            .to_string();
 
         // Skip if empty or identical to last partial (no new info)
         if text.is_empty() {
@@ -383,8 +385,11 @@ fn live_default_threads() -> i32 {
 /// ("very, very") is preserved. If no run is collapsed the original text is
 /// returned verbatim, so non-looping transcripts are never reformatted.
 fn collapse_repeated_clauses(text: &str) -> String {
-    let normalize =
-        |s: &str| s.trim().trim_end_matches(['.', ',', ';', '!', '?', ' ']).to_lowercase();
+    let normalize = |s: &str| {
+        s.trim()
+            .trim_end_matches(['.', ',', ';', '!', '?', ' '])
+            .to_lowercase()
+    };
     let clauses: Vec<&str> = text
         .split(['.', ',', ';'])
         .map(str::trim)
