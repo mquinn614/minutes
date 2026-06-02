@@ -37,7 +37,6 @@ pub struct AppState {
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
     pub discard_short_hotkey_capture: Arc<AtomicBool>,
-    pub pty_manager: Arc<Mutex<crate::pty::PtyManager>>,
     pub dictation_active: Arc<AtomicBool>,
     pub dictation_stop_flag: Arc<AtomicBool>,
     pub dictation_focus_guard: Arc<Mutex<Option<DictationFocusGuard>>>,
@@ -265,11 +264,8 @@ fn permission_restart_snapshot(state: &AppState) -> PermissionRestartSnapshot {
                 .ok()
                 .and_then(|health| health.clone())
                 .is_some());
-    let assistant_session = state
-        .pty_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.assistant_session_id());
+    // Assistant/PTY subsystem removed in the Madness fork — no live session to report.
+    let assistant_session: Option<String> = None;
 
     PermissionRestartSnapshot {
         recording,
@@ -2102,11 +2098,6 @@ pub struct DesktopCapabilities {
     pub supports_call_detection: bool,
     pub supports_tray_artifact_copy: bool,
     pub supports_dictation_hotkey: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TerminalInfo {
-    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6378,39 +6369,14 @@ fn validate_text_file_path(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn write_notice_prompt(command: &str, plain_text: &str) -> String {
-    if is_shell_command(command) {
-        format!("cat <<'__MINUTES__'\n{plain_text}\n__MINUTES__\n")
-    } else {
-        format!("{plain_text}\n")
-    }
-}
-
-fn artifact_switch_prompt(command: &str, artifact_name: Option<&str>) -> String {
-    let plain_text = match artifact_name {
-        Some(name) => format!(
-            "Minutes opened artifact {name}. Read CURRENT_ARTIFACT.md and your assistant instructions (CLAUDE.md or AGENTS.md). The user has this file open in the left pane and may want help editing it. If you update it on disk, the viewer will refresh live."
-        ),
-        None => "Minutes cleared the open artifact focus. Ignore CURRENT_ARTIFACT.md unless it reappears. If CURRENT_MEETING.md exists, prioritize it; otherwise continue in general assistant mode."
-            .into(),
-    };
-    write_notice_prompt(command, &plain_text)
-}
-
 fn notify_assistant_artifact_focus(
-    state: &tauri::State<AppState>,
-    artifact_name: Option<&str>,
+    _state: &tauri::State<AppState>,
+    _artifact_name: Option<&str>,
 ) -> Result<(), String> {
-    let mut manager = state
-        .pty_manager
-        .lock()
-        .map_err(|_| "PTY manager lock failed")?;
-    if manager.assistant_session_id().is_some() {
-        if let Some(command) = manager.session_command(crate::pty::ASSISTANT_SESSION_ID) {
-            let prompt = artifact_switch_prompt(&command, artifact_name);
-            manager.write_input(crate::pty::ASSISTANT_SESSION_ID, prompt.as_bytes())?;
-        }
-    }
+    // The Recall AI assistant (and its PTY) was removed in the Minutes Madness
+    // fork, so there is no assistant session to notify. No-op stub; the
+    // remaining call sites are Minutes artifact/meeting flows trimmed in a
+    // later slice.
     Ok(())
 }
 
@@ -7350,336 +7316,6 @@ pub fn cmd_mark_activation_nudge_shown(state: tauri::State<AppState>, kind: Opti
     mark_activation_next_step_nudge_shown(&state.activation_progress, kind.as_deref());
 }
 
-// ── Terminal / AI Assistant commands ──────────────────────────
-
-fn meeting_title_from_path(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(|stem| stem.replace('-', " "))
-        .unwrap_or_else(|| "Meeting Discussion".into())
-}
-
-fn terminal_title_for_mode(mode: &str, meeting_path: Option<&str>) -> Result<String, String> {
-    match mode {
-        "assistant" => Ok("Minutes Assistant".into()),
-        "meeting" => Ok(format!(
-            "Discussing: {}",
-            meeting_title_from_path(meeting_path.ok_or("meeting_path required for meeting mode")?)
-        )),
-        other => Err(format!(
-            "Unknown mode: {}. Use 'meeting' or 'assistant'.",
-            other
-        )),
-    }
-}
-
-fn sync_workspace_for_mode(
-    workspace: &Path,
-    config: &Config,
-    mode: &str,
-    meeting_path: Option<&str>,
-) -> Result<(), String> {
-    // write_assistant_context preserves live transcript markers if present (U2/T3)
-    crate::context::write_assistant_context(workspace, config)?;
-
-    match mode {
-        "assistant" => crate::context::clear_active_meeting_context(workspace),
-        "meeting" => {
-            let path = meeting_path.ok_or("meeting_path required for meeting mode")?;
-            let meeting = PathBuf::from(path);
-            minutes_core::notes::validate_meeting_path(&meeting, &config.output_dir)?;
-            crate::context::write_active_meeting_context(workspace, &meeting, config)
-        }
-        other => Err(format!(
-            "Unknown mode: {}. Use 'meeting' or 'assistant'.",
-            other
-        )),
-    }
-}
-
-fn is_shell_command(command: &str) -> bool {
-    matches!(
-        Path::new(command)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(command),
-        "bash" | "zsh" | "sh" | "fish"
-    )
-}
-
-fn is_approval_bypass_flag(arg: &str) -> bool {
-    matches!(
-        arg,
-        "--dangerously-skip-permissions" | "--dangerously-bypass-approvals-and-sandbox"
-    )
-}
-
-fn filtered_agent_args(agent_name: &str, args: &[String]) -> Vec<String> {
-    let allowed_bypass_flag = match agent_name {
-        "claude" => Some("--dangerously-skip-permissions"),
-        "codex" => Some("--dangerously-bypass-approvals-and-sandbox"),
-        _ => None,
-    };
-
-    args.iter()
-        .filter(|arg| {
-            !is_approval_bypass_flag(arg)
-                || allowed_bypass_flag.is_some_and(|allowed| arg.as_str() == allowed)
-        })
-        .cloned()
-        .collect()
-}
-
-fn context_switch_prompt(command: &str, mode: &str, title: &str) -> String {
-    let plain_text = match mode {
-        "meeting" => format!(
-            "Minutes changed focus to {title}. Read CURRENT_MEETING.md and your assistant instructions (CLAUDE.md or AGENTS.md), then help with that meeting."
-        ),
-        _ => "Minutes cleared the active meeting focus. Resume general assistant mode and reread your assistant instructions (CLAUDE.md or AGENTS.md) if needed."
-            .into(),
-    };
-
-    if is_shell_command(command) {
-        format!("cat <<'__MINUTES__'\n{plain_text}\n__MINUTES__\n")
-    } else {
-        format!("{plain_text}\n")
-    }
-}
-
-/// Resolve an agent name or path to an executable.
-///
-/// Accepts either:
-/// - A bare command name ("claude", "codex", "bash") — looked up via PATH
-///   (with PATHEXT on Windows, so `claude.cmd` resolves from `claude`), then
-///   searched in well-known install dirs as a fallback
-/// - An absolute path ("/usr/local/bin/my-agent") — used directly if it exists
-///
-/// This is intentionally open: users can set `assistant.agent` to any binary
-/// they want, including wrapper scripts or custom agent CLIs.
-pub fn find_agent_binary(name: &str) -> Option<PathBuf> {
-    // If it's an absolute path, check it directly
-    let as_path = PathBuf::from(name);
-    if as_path.is_absolute() && as_path.exists() {
-        return Some(as_path);
-    }
-
-    // PATH lookup (cross-platform). On Windows this respects PATHEXT and
-    // resolves `claude` → `claude.cmd` / `claude.exe` correctly. GUI apps
-    // launched from Finder/Explorer often have a minimal PATH, so the
-    // fallback below catches common install dirs that aren't on PATH.
-    if let Ok(path) = which::which(name) {
-        return Some(path);
-    }
-
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let mut search_dirs: Vec<PathBuf> = vec![
-        home.join(".cargo/bin"),
-        home.join(".local/bin"),
-        home.join(".opencode/bin"),
-        home.join(".npm-global/bin"),
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-        PathBuf::from("/bin"),
-    ];
-    if cfg!(windows) {
-        // npm-global on Windows lands in %APPDATA%\npm by default, which
-        // isn't always on PATH for GUI processes. LOCALAPPDATA covers a few
-        // installer conventions (e.g., scoop, native installers).
-        if let Some(appdata) = dirs::data_dir() {
-            search_dirs.push(appdata.join("npm"));
-        }
-        if let Some(local) = dirs::data_local_dir() {
-            search_dirs.push(local.join("npm"));
-            search_dirs.push(local.join("Programs"));
-        }
-    }
-
-    // On Windows, npm installs a bare extensionless shebang script alongside
-    // the .cmd wrapper. Try .cmd/.exe first so we never hand a shebang script
-    // to CreateProcessW (os error 193 "not a valid Win32 application").
-    let exts: &[&str] = if cfg!(windows) {
-        &["cmd", "exe", "bat", ""]
-    } else {
-        &[""]
-    };
-    for dir in &search_dirs {
-        for ext in exts {
-            let mut candidate = dir.join(name);
-            if !ext.is_empty() {
-                candidate.set_extension(ext);
-            }
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// Platform-correct path to the user's config file, used in error messages.
-fn user_config_path_for_display() -> String {
-    Config::config_path().display().to_string()
-}
-
-/// Shared spawn logic used by both cmd_spawn_terminal and the tray menu handler.
-/// Returns (session_id, window_title) on success.
-pub fn spawn_terminal(
-    app: &tauri::AppHandle,
-    pty_manager: &std::sync::Arc<Mutex<crate::pty::PtyManager>>,
-    mode: &str,
-    meeting_path: Option<&str>,
-    agent_override: Option<&str>,
-) -> Result<(String, String), String> {
-    let config = Config::load();
-    let title = terminal_title_for_mode(mode, meeting_path)?;
-    let workspace = crate::context::create_workspace(&config)?;
-    sync_workspace_for_mode(&workspace, &config, mode, meeting_path)?;
-
-    let mut manager = pty_manager.lock().map_err(|_| "PTY manager lock failed")?;
-
-    if manager.assistant_session_id().is_some() {
-        manager.set_session_title(crate::pty::ASSISTANT_SESSION_ID, title.clone())?;
-        // Only send a context switch prompt when actively switching to a
-        // meeting (not when merely re-opening the panel in assistant mode,
-        // which would inject unwanted text into Claude Code's input).
-        if mode == "meeting" {
-            if let Some(command) = manager.session_command(crate::pty::ASSISTANT_SESSION_ID) {
-                let prompt = context_switch_prompt(&command, mode, &title);
-                manager.write_input(crate::pty::ASSISTANT_SESSION_ID, prompt.as_bytes())?;
-            }
-        }
-    } else {
-        let agent_name = agent_override.unwrap_or(&config.assistant.agent);
-        let agent_bin = find_agent_binary(agent_name).ok_or_else(|| {
-            let install_hint = if agent_name == "claude" {
-                " Install Claude Code with `npm i -g @anthropic-ai/claude-code`."
-            } else {
-                ""
-            };
-            format!(
-                "'{}' not found on PATH or in common install dirs.{} \
-                 Then set the agent in {} under [assistant].",
-                agent_name,
-                install_hint,
-                user_config_path_for_display(),
-            )
-        })?;
-
-        let agent_args = filtered_agent_args(agent_name, &config.assistant.agent_args);
-
-        manager.spawn(
-            crate::pty::SpawnConfig {
-                session_id: crate::pty::ASSISTANT_SESSION_ID.into(),
-                app_handle: app.clone(),
-                command: agent_bin.to_str().unwrap_or(agent_name).to_string(),
-                args: agent_args,
-                cwd: workspace.clone(),
-                context_dir: workspace.clone(),
-                title: title.clone(),
-                target_window: "main".into(),
-            },
-            120,
-            30,
-        )?;
-    }
-
-    drop(manager);
-
-    // Emit recall:expand event to the main window instead of opening a
-    // separate terminal window. The JS in index.html handles the panel
-    // expand animation and xterm.js initialisation.
-    if let Some(win) = app.get_webview_window("main") {
-        win.show().ok();
-        win.set_focus().ok();
-        app.emit_to(
-            "main",
-            "recall:expand",
-            serde_json::json!({ "title": title, "mode": mode }),
-        )
-        .ok();
-    }
-
-    Ok((crate::pty::ASSISTANT_SESSION_ID.into(), title))
-}
-
-#[tauri::command]
-pub fn cmd_spawn_terminal(
-    app: tauri::AppHandle,
-    state: tauri::State<AppState>,
-    mode: String,
-    meeting_path: Option<String>,
-    agent: Option<String>,
-) -> Result<String, String> {
-    let (session_id, _) = spawn_terminal(
-        &app,
-        &state.pty_manager,
-        &mode,
-        meeting_path.as_deref(),
-        agent.as_deref(),
-    )?;
-    Ok(session_id)
-}
-
-#[tauri::command]
-pub fn cmd_pty_input(
-    state: tauri::State<AppState>,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    let mut manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
-    manager.write_input(&session_id, data.as_bytes())
-}
-
-#[tauri::command]
-pub fn cmd_pty_resize(
-    state: tauri::State<AppState>,
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    let manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
-    manager.resize(&session_id, cols, rows)
-}
-
-#[tauri::command]
-pub fn cmd_pty_kill(state: tauri::State<AppState>, session_id: String) -> Result<(), String> {
-    let mut manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
-    manager.kill_session(&session_id);
-    Ok(())
-}
-
-/// Well-known agent CLIs to check for in cmd_list_agents.
-const WELL_KNOWN_AGENTS: &[&str] = &["claude", "codex", "gemini", "opencode", "pi", "bash", "zsh"];
-
-#[tauri::command]
-pub fn cmd_list_agents() -> serde_json::Value {
-    let agents: Vec<serde_json::Value> = WELL_KNOWN_AGENTS
-        .iter()
-        .filter_map(|name| {
-            find_agent_binary(name).map(|path| {
-                serde_json::json!({
-                    "name": name,
-                    "path": path.display().to_string(),
-                })
-            })
-        })
-        .collect();
-    serde_json::json!(agents)
-}
-
-#[tauri::command]
-pub fn cmd_terminal_info(state: tauri::State<AppState>, session_id: String) -> TerminalInfo {
-    let title = state
-        .pty_manager
-        .lock()
-        .ok()
-        .and_then(|manager| manager.session_title(&session_id))
-        .unwrap_or_else(|| "Minutes Assistant".into());
-    TerminalInfo { title }
-}
-
 // ── Settings commands ─────────────────────────────────────────
 
 #[tauri::command]
@@ -8346,7 +7982,6 @@ mod tests {
             global_hotkey_shortcut: Arc::new(Mutex::new("CmdOrCtrl+Shift+M".into())),
             hotkey_runtime: Arc::new(Mutex::new(HotkeyRuntime::default())),
             discard_short_hotkey_capture: Arc::new(AtomicBool::new(false)),
-            pty_manager: Arc::new(Mutex::new(crate::pty::PtyManager::default())),
             dictation_active: Arc::new(AtomicBool::new(false)),
             dictation_stop_flag: Arc::new(AtomicBool::new(false)),
             dictation_focus_guard: Arc::new(Mutex::new(None)),
@@ -8558,55 +8193,6 @@ mod tests {
             .observe(denied, 80_000)
             .expect("loss should emit after wake grace expires");
         assert_eq!(decision.reason, "permission_loss");
-    }
-
-    #[test]
-    fn filtered_agent_args_drops_skip_permissions_for_unsupported_agents() {
-        let args = vec![
-            "--dangerously-skip-permissions".to_string(),
-            "--model".to_string(),
-            "openai/gpt-5.5".to_string(),
-        ];
-
-        assert_eq!(
-            filtered_agent_args("opencode", &args),
-            vec!["--model".to_string(), "openai/gpt-5.5".to_string()]
-        );
-        assert_eq!(filtered_agent_args("claude", &args), args);
-    }
-
-    #[test]
-    fn filtered_agent_args_keeps_codex_specific_bypass_flag_only_for_codex() {
-        let args = vec![
-            "--dangerously-bypass-approvals-and-sandbox".to_string(),
-            "--model".to_string(),
-            "gpt-5-codex".to_string(),
-        ];
-
-        assert_eq!(filtered_agent_args("codex", &args), args);
-        assert_eq!(
-            filtered_agent_args("claude", &args),
-            vec!["--model".to_string(), "gpt-5-codex".to_string()]
-        );
-        assert_eq!(
-            filtered_agent_args("opencode", &args),
-            vec!["--model".to_string(), "gpt-5-codex".to_string()]
-        );
-    }
-
-    #[test]
-    fn assistant_switch_prompts_are_instruction_file_agnostic() {
-        let meeting_prompt = context_switch_prompt("opencode", "meeting", "Discussing: Demo");
-        assert!(meeting_prompt.contains("CURRENT_MEETING.md"));
-        assert!(meeting_prompt.contains("CLAUDE.md or AGENTS.md"));
-        assert!(!meeting_prompt.contains("Read CURRENT_MEETING.md and CLAUDE.md,"));
-
-        let general_prompt = context_switch_prompt("opencode", "assistant", "Minutes Assistant");
-        assert!(general_prompt.contains("CLAUDE.md or AGENTS.md"));
-
-        let artifact_prompt = artifact_switch_prompt("opencode", Some("draft.md"));
-        assert!(artifact_prompt.contains("CURRENT_ARTIFACT.md"));
-        assert!(artifact_prompt.contains("CLAUDE.md or AGENTS.md"));
     }
 
     #[test]

@@ -24,7 +24,6 @@ mod cli_setup;
 mod commands;
 mod context;
 mod palette_dispatch;
-mod pty;
 mod secret_store;
 mod shortcut_manager;
 mod text_insertion;
@@ -46,18 +45,12 @@ const CLEAN_EXIT_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::fr
 #[cfg(target_os = "macos")]
 static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
-fn cleanup_before_process_exit(app: &tauri::AppHandle) {
+fn cleanup_before_process_exit(_app: &tauri::AppHandle) {
     tracing::info!(
         target: "minutes::shutdown",
         pid = std::process::id(),
         "cleanup_before_process_exit: starting"
     );
-    if let Some(state) = app.try_state::<commands::AppState>() {
-        if let Ok(mut mgr) = state.pty_manager.lock() {
-            tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: killing PTY sessions");
-            mgr.kill_all();
-        }
-    }
     tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: shutting down parakeet sidecar");
     minutes_core::parakeet_sidecar::shutdown_global_parakeet_sidecar();
     tracing::info!(target: "minutes::shutdown", "cleanup_before_process_exit: done");
@@ -87,11 +80,14 @@ fn exit_process_without_destructors(code: i32) -> ! {
     // left a "half-alive zombie" (window hidden, process alive). That
     // diagnosis was WRONG. The minutes::shutdown trace later proved the
     // worker thread never reached this function at all — it was wedged in
-    // PtyManager::kill_session's unconditional reader-thread join (ConPTY
-    // never delivers EOF on child kill). Once that join was bounded (see
-    // pty.rs), execution reaches here cleanly and a plain libc::_exit
-    // terminates the process instantly, every time. TerminateProcess was
-    // treating a symptom of a hang that lived three calls upstream.
+    // the (now-removed) PTY manager's unconditional reader-thread join on
+    // quit (ConPTY never delivers EOF on child kill). The Minutes Madness
+    // fork deletes the AI-assistant PTY subsystem entirely, so that hang
+    // can no longer occur; the bounded-join fix that resolved it upstream
+    // (silverstein/minutes PR #262) lived in the now-deleted pty.rs.
+    // libc::_exit still terminates the process instantly here, every time.
+    // TerminateProcess was treating a symptom of a hang that lived three
+    // calls upstream.
     //
     // TerminateProcess is retained ONLY in the watchdog
     // (`spawn_windows_exit_watchdog`) as a last-resort nuclear backstop:
@@ -531,14 +527,15 @@ fn show_madness_window(app: &tauri::AppHandle) {
         win.set_focus().ok();
         return;
     }
-    let win_result = WebviewWindowBuilder::new(app, "madness", WebviewUrl::App("madness.html".into()))
-        .title("Minutes Madness")
-        .inner_size(1320.0, 860.0)
-        .min_inner_size(860.0, 560.0)
-        .content_protected(Config::load().privacy.hide_from_screen_share)
-        .center()
-        .focused(true)
-        .build();
+    let win_result =
+        WebviewWindowBuilder::new(app, "madness", WebviewUrl::App("madness.html".into()))
+            .title("Minutes Madness")
+            .inner_size(1320.0, 860.0)
+            .min_inner_size(860.0, 560.0)
+            .content_protected(Config::load().privacy.hide_from_screen_share)
+            .center()
+            .focused(true)
+            .build();
     // Madness is an intentionally focused, self-contained panel — its in-panel
     // header is the entire control surface, so we drop the inherited app menu
     // (File/Edit/Window/Help) on Windows/Linux. macOS keeps the system menu,
@@ -1827,7 +1824,6 @@ fn main() {
             dictation_shortcut: dictation_shortcut.clone(),
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
-            pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
             dictation_active: dictation_active.clone(),
             dictation_stop_flag: dictation_stop_flag.clone(),
             dictation_focus_guard: Arc::new(Mutex::new(None)),
@@ -2142,7 +2138,6 @@ fn main() {
                 true,
                 None::<&str>,
             )?;
-            let assistant_item = MenuItem::with_id(app, "assistant", "Recall", true, None::<&str>)?;
             let screen_share_item = MenuItem::with_id(
                 app,
                 "screen-share-toggle",
@@ -2175,7 +2170,6 @@ fn main() {
                 &mic_mute_item,
                 &sep,
                 &note_item,
-                &assistant_item,
                 &list_item,
             ])?;
             if commands::supports_tray_artifact_copy() {
@@ -2366,25 +2360,6 @@ fn main() {
                         }
                         "note" => {
                             show_note_window(app);
-                        }
-                        "assistant" => {
-                            let pty_mgr = app.state::<commands::AppState>().pty_manager.clone();
-                            let app_handle = app.clone();
-                            std::thread::spawn(move || {
-                                if let Err(err) = commands::spawn_terminal(
-                                    &app_handle,
-                                    &pty_mgr,
-                                    "assistant",
-                                    None,
-                                    None,
-                                ) {
-                                    commands::show_user_notification(
-                                        &app_handle,
-                                        "AI Assistant",
-                                        &err,
-                                    );
-                                }
-                            });
                         }
                         "list" => {
                             let meetings_dir = minutes_core::config::Config::load().output_dir;
@@ -2722,12 +2697,6 @@ fn main() {
             commands::cmd_download_model,
             commands::cmd_mark_activation_nudge_shown,
             commands::cmd_upcoming_meetings,
-            commands::cmd_spawn_terminal,
-            commands::cmd_pty_input,
-            commands::cmd_pty_resize,
-            commands::cmd_pty_kill,
-            commands::cmd_list_agents,
-            commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_warm_parakeet,
             commands::cmd_openai_compatible_secret_status,
