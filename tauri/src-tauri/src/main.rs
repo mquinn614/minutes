@@ -1951,15 +1951,19 @@ fn main() {
                 });
             }
 
-            // Create main window on launch
+            // Minutes Madness is a standalone fork: the Madness window IS the
+            // app. We no longer open the Minutes "main" window on startup —
+            // that window hosts Minutes-only features (the Recall AI assistant,
+            // meetings browser, settings) that Madness doesn't use. Not opening
+            // it means the Recall panel never loads, so the assistant never
+            // auto-spawns its agent CLI (no Claude Code dependency) and no PTY
+            // is created (the Windows quit-hang root cause can't occur). The
+            // main window's machinery (tray, recording, live transcript) all
+            // run from the setup closure independent of any window. index.html
+            // stays in the bundle for now but is no longer shown; full removal
+            // is a later cleanup. show_main_window remains for the (to-be-
+            // stripped) menu/tray entry points until slice 3 trims those.
             commands::seed_latest_retryable_output(&latest_output);
-            show_main_window(app.handle());
-            // Minutes Madness prototype: land hosts directly in the game window
-            // on startup. The full Minutes main window still opens behind it (so
-            // all app machinery + the menu bar are available), but non-technical
-            // All-Hands hosts shouldn't have to hunt for "File → Minutes
-            // Madness…" — they get the bracket front-and-center. show_madness_
-            // window focuses it on top of main.
             show_madness_window(app.handle());
             commands::spawn_permission_monitor(app.handle().clone());
 
