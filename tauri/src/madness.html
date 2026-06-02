@@ -75,6 +75,17 @@
       letter-spacing: 0.3px;
     }
     header h1 .mono { font-family: 'Geist Mono', monospace; font-size: 13px; color: var(--accent); vertical-align: middle; }
+    .brand { display: flex; flex-direction: column; gap: 1px; }
+    .attribution {
+      font-family: 'Geist Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.2px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      cursor: pointer;
+      width: fit-content;
+    }
+    .attribution:hover { color: var(--accent); }
     .spacer { flex: 1; }
 
     select, button {
@@ -332,7 +343,10 @@
 </head>
 <body>
   <header>
-    <h1>Minutes <span style="font-style:italic">Madness</span></h1>
+    <div class="brand">
+      <h1>Minutes <span style="font-style:italic">Madness</span></h1>
+      <a class="attribution" id="attribution" title="Built on top of Minutes by Mat Silverstein — open the project on GitHub">Built on top of Minutes ↗</a>
+    </div>
     <span class="spacer"></span>
     <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Modify Buzzwords</button>
     <button id="audio-btn" title="Choose which microphone to record from">🎙 Audio</button>
@@ -1682,6 +1696,9 @@
     document.getElementById('mic-settings-btn').addEventListener('click', openMicSettings);
     document.getElementById('nudge-dismiss').addEventListener('click', hideAudioNudge);
     document.getElementById('celebrate-btn').addEventListener('click', showFanfare);
+    document.getElementById('attribution').addEventListener('click', () => {
+      invoke('cmd_open_file', { path: 'https://github.com/silverstein/minutes' }).catch(() => {});
+    });
     document.getElementById('fanfare').addEventListener('click', hideFanfare);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideFanfare(); });
     window.addEventListener('resize', () => {

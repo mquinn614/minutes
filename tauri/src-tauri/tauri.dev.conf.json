@@ -1,6 +1,6 @@
 {
-  "productName": "Minutes Dev",
-  "identifier": "com.useminutes.desktop.dev",
+  "productName": "Minutes Madness Dev",
+  "identifier": "com.useminutes.madness.dev",
   "app": {
     "macOSPrivateApi": true
   }

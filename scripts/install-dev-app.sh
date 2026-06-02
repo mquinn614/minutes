@@ -28,7 +28,7 @@ if [[ -n "$RUSTUP_CARGO" && "$ACTIVE_CARGO" != "$RUSTUP_CARGO" ]]; then
 fi
 
 DEV_CONFIG="tauri/src-tauri/tauri.dev.conf.json"
-DEV_PRODUCT_NAME="Minutes Dev"
+DEV_PRODUCT_NAME="Minutes Madness Dev"
 BUILD_APP="target/release/bundle/macos/${DEV_PRODUCT_NAME}.app"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 INSTALL_APP="${INSTALL_DIR}/${DEV_PRODUCT_NAME}.app"
@@ -148,7 +148,7 @@ set -e
 
 echo ""
 echo "Installed app: $INSTALL_APP"
-echo "Bundle id: com.useminutes.desktop.dev"
+echo "Bundle id: com.useminutes.madness.dev"
 echo "Build features: $MINUTES_BUILD_FEATURES"
 echo "Signing mode: $SIGN_MODE"
 echo "Hotkey diagnostic exit code: $DIAG_EXIT"
