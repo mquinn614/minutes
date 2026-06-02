@@ -52,8 +52,8 @@ use minutes_core::Config;
 use crate::commands::{
     cmd_add_note, cmd_create_artifact_from_meeting, cmd_open_meeting_url, cmd_search,
     cmd_start_dictation, cmd_start_live_transcript, cmd_start_recording, cmd_stop_dictation,
-    cmd_stop_live_transcript, cmd_stop_recording, cmd_upcoming_meetings, copy_to_clipboard,
-    dictation_pid_active, open_target, recording_active, AppState,
+    cmd_stop_live_transcript, cmd_stop_recording, copy_to_clipboard, dictation_pid_active,
+    open_target, recording_active, AppState,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -113,9 +113,9 @@ pub struct PaletteListResponse {
 ///
 /// **Honest framing**: this is a tagged envelope, not a fully-typed
 /// response surface. Many inner payloads are still `serde_json::Value`
-/// passthroughs to existing Tauri command shapes (`cmd_search`,
-/// `cmd_upcoming_meetings`, etc.). Typing those inner DTOs is a slice 3
-/// refactor. What this catches is *outer* drift — every dispatch arm
+/// passthroughs to existing Tauri command shapes (`cmd_search`, etc.).
+/// Typing those inner DTOs is a slice 3 refactor. What this catches is
+/// *outer* drift — every dispatch arm
 /// has a named variant, so a refactor that returns the wrong shape
 /// fails to compile instead of leaking type confusion to the frontend.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -137,8 +137,6 @@ pub enum ActionResponse {
     Actions { actions: serde_json::Value },
     /// FindRecentDecisions — passthrough decisions list.
     Decisions { decisions: serde_json::Value },
-    /// ShowUpcomingMeetings — passthrough cmd_upcoming_meetings shape.
-    Upcoming { events: serde_json::Value },
     /// OpenLatestMeetingFromToday / OpenLatestMeeting — metadata about
     /// which meeting was opened.
     MeetingOpened { path: String },
@@ -563,15 +561,6 @@ fn dispatch_action(
             open_target(&app, &workspace_root.to_string_lossy())?;
             Ok(ActionResponse::Ok)
         }
-        ActionId::ShowUpcomingMeetings => {
-            // Sync command bridges to the async cmd_upcoming_meetings via
-            // the blocking runtime helper. Tauri's async runtime is a
-            // tokio runtime under the hood; block_on inside a sync command
-            // is the documented bridge.
-            let events = tauri::async_runtime::block_on(cmd_upcoming_meetings());
-            Ok(ActionResponse::Upcoming { events })
-        }
-
         // ── Search / research ────────────────────────────────────
         ActionId::SearchTranscripts { query } => {
             // Empty query => list-style results; let core decide. cmd_search
@@ -927,16 +916,6 @@ mod tests {
         .unwrap();
         assert_kind(&v, "decisions");
         assert!(v.get("decisions").unwrap().is_array());
-    }
-
-    #[test]
-    fn action_response_upcoming_has_events() {
-        let v = serde_json::to_value(ActionResponse::Upcoming {
-            events: serde_json::json!([]),
-        })
-        .unwrap();
-        assert_kind(&v, "upcoming");
-        assert!(v.get("events").unwrap().is_array());
     }
 
     #[test]

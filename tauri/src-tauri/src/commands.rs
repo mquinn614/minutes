@@ -7159,20 +7159,6 @@ fn vocabulary_person_key(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Returns upcoming calendar events as JSON. NOT invoked at launch in the
-/// Minutes Madness fork (the startup tray poll was removed) — this remains
-/// only as the on-demand bridge for the command palette's "Show upcoming
-/// meetings" action, which is the sole remaining calendar access point.
-#[tauri::command]
-pub async fn cmd_upcoming_meetings() -> serde_json::Value {
-    tauri::async_runtime::spawn_blocking(|| {
-        let events = minutes_core::calendar::upcoming_events(120); // 2 hour lookahead
-        serde_json::to_value(&events).unwrap_or(serde_json::json!([]))
-    })
-    .await
-    .unwrap_or(serde_json::json!([]))
-}
-
 #[tauri::command]
 pub fn cmd_needs_setup(state: tauri::State<AppState>) -> serde_json::Value {
     let config = Config::load();

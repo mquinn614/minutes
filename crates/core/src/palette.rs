@@ -99,7 +99,6 @@ pub enum ActionId {
     OpenMeetingsFolder,
     OpenMemosFolder,
     OpenAssistantWorkspace,
-    ShowUpcomingMeetings,
 
     // Search / research — the optional payload is the inline query captured
     // from the palette input, so `> search pricing` can execute in one step.
@@ -150,7 +149,6 @@ impl ActionId {
             ActionId::OpenMeetingsFolder => "open-meetings-folder",
             ActionId::OpenMemosFolder => "open-memos-folder",
             ActionId::OpenAssistantWorkspace => "open-assistant-workspace",
-            ActionId::ShowUpcomingMeetings => "show-upcoming-meetings",
             ActionId::SearchTranscripts { .. } => "search-transcripts",
             ActionId::ResearchTopic { .. } => "research-topic",
             ActionId::FindOpenActionItems => "find-open-action-items",
@@ -439,15 +437,6 @@ pub fn commands() -> Vec<Command> {
             title: "Open latest meeting from today",
             description: "Jump to the most recent meeting recorded today",
             keywords: &["today", "latest", "today's"],
-            section: Section::Navigation,
-            visibility: Visibility::always(),
-            input: InputKind::None,
-        },
-        Command {
-            id: ActionId::ShowUpcomingMeetings,
-            title: "Show upcoming meetings",
-            description: "Calendar-aware preview of what's next",
-            keywords: &["calendar", "next", "upcoming", "schedule"],
             section: Section::Navigation,
             visibility: Visibility::always(),
             input: InputKind::None,
@@ -1089,7 +1078,7 @@ pub mod recents {
                 ActionId::StartRecording,
                 ActionId::StopRecording,
                 ActionId::OpenLatestMeeting,
-                ActionId::ShowUpcomingMeetings,
+                ActionId::OpenLatestMeetingFromToday,
                 ActionId::OpenMeetingsFolder,
                 ActionId::OpenMemosFolder,
             ] {
@@ -1177,10 +1166,12 @@ mod tests {
         let all = commands();
         // The launch-cohesion slice adds two meeting-context commands
         // on top of slice 2: create a debrief draft and confirm a speaker.
+        // Minutes Madness fork removed "Show upcoming meetings" (calendar),
+        // dropping the count from 22 to 21.
         assert_eq!(
             all.len(),
-            22,
-            "registry should have exactly 22 commands with backing dispatchers"
+            21,
+            "registry should have exactly 21 commands with backing dispatchers"
         );
     }
 
