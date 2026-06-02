@@ -430,19 +430,10 @@ pub fn spawn_permission_monitor(app: tauri::AppHandle) {
 pub enum CallEndCountdownTerminalState {
     None = 0,
     UserCancelled = 1,
-    RecordingStopped = 2,
-    AutoStopFired = 3,
-}
-
-impl CallEndCountdownTerminalState {
-    pub fn from_u8(value: u8) -> Self {
-        match value {
-            1 => Self::UserCancelled,
-            2 => Self::RecordingStopped,
-            3 => Self::AutoStopFired,
-            _ => Self::None,
-        }
-    }
+    // `RecordingStopped` / `AutoStopFired` and the `from_u8` reader were only
+    // set/consumed by the call detector's auto-stop flow, which the Madness
+    // fork removed (slice 3c). The countdown can no longer fire on its own;
+    // only the user-cancel and reset paths remain wired.
 }
 
 type ParakeetStatusView = minutes_core::transcription_coordinator::ParakeetBackendStatus;
@@ -9509,12 +9500,10 @@ mod tests {
             assert!(state.call_end_countdown_active.load(Ordering::Relaxed));
             assert!(!state.call_end_countdown_cancel.load(Ordering::Relaxed));
             assert_eq!(
-                CallEndCountdownTerminalState::from_u8(
-                    state
-                        .call_end_countdown_terminal_state
-                        .load(Ordering::Relaxed)
-                ),
-                CallEndCountdownTerminalState::UserCancelled
+                state
+                    .call_end_countdown_terminal_state
+                    .load(Ordering::Relaxed),
+                CallEndCountdownTerminalState::UserCancelled as u8
             );
         });
     }
@@ -9543,12 +9532,10 @@ mod tests {
             assert!(!state.call_end_countdown_active.load(Ordering::Relaxed));
             assert!(state.call_end_countdown_cancel.load(Ordering::Relaxed));
             assert_eq!(
-                CallEndCountdownTerminalState::from_u8(
-                    state
-                        .call_end_countdown_terminal_state
-                        .load(Ordering::Relaxed)
-                ),
-                CallEndCountdownTerminalState::None
+                state
+                    .call_end_countdown_terminal_state
+                    .load(Ordering::Relaxed),
+                CallEndCountdownTerminalState::None as u8
             );
 
             state.starting.store(false, Ordering::Relaxed);
