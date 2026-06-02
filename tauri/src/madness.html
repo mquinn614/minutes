@@ -468,7 +468,7 @@
       : async (cmd, args) => mockInvoke(cmd, args);
 
     function mockGame() {
-      const labels = ['synergy', 'AI', 'headwinds', 'leverage', 'circle back',
+      const labels = ['game changer', 'AI', 'headwinds', 'leverage', 'circle back',
         'low-hanging fruit', 'double-click', 'bandwidth', 'north star', 'value-add',
         'paradigm shift', 'move the needle', 'drill down', 'table stakes',
         'RTO', 'pivot'];
@@ -923,7 +923,7 @@
     // ── Modify Buzzwords (edit the 16 terms + seeding) ──────────
     // Default 16 buzzwords prefilled into the Modify Buzzwords editor on first
     // run. Keep in sync with examples/minutes-madness/all-hands-terms.txt.
-    const DEFAULT_TERMS = ['synergy | synergistic', 'AI | AI-powered | AI powered | A.I. | Artificial Intelligence', 'headwinds', 'leverage | leveraging', 'circle back | circle-back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star | northstar', 'value-add | value add', 'paradigm shift | paradigm-shift', 'move the needle', 'drill down | drill-down | drilldown', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
+    const DEFAULT_TERMS = ['game changer | game-changer | gamechanger', 'AI | AI-powered | AI powered | A.I. | Artificial Intelligence', 'headwinds', 'leverage | leveraging', 'circle back | circle-back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star | northstar', 'value-add | value add', 'paradigm shift | paradigm-shift', 'move the needle', 'drill down | drill-down | drilldown', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
 
     function termToLine(t) { return [t.label, ...(t.aliases || [])].join(' | '); }
 
