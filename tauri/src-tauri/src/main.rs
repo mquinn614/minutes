@@ -17,7 +17,6 @@ use tauri::{
 static PARAKEET_FEATURE_SENTINEL: &[u8] = b"transcribe_parakeet parakeet_helper\0";
 
 mod call_capture;
-mod call_detect;
 #[cfg(target_os = "macos")]
 mod cli_setup;
 mod commands;
@@ -1379,8 +1378,6 @@ fn main() {
     let palette_lifecycle = Arc::new(Mutex::new(commands::PaletteLifecycle::default()));
     let palette_reopen_pending = Arc::new(AtomicBool::new(false));
     let recording_clone = recording.clone();
-    let recording_for_detector = recording.clone();
-    let processing_clone = processing.clone();
     let stop_clone = stop_flag.clone();
     let recording_started_by_call_detect = Arc::new(AtomicBool::new(false));
     let call_end_countdown_cancel = Arc::new(AtomicBool::new(false));
@@ -1388,11 +1385,6 @@ fn main() {
     let call_end_countdown_terminal_state = Arc::new(AtomicU8::new(
         commands::CallEndCountdownTerminalState::None as u8,
     ));
-    let started_by_call_detect_for_detector = recording_started_by_call_detect.clone();
-    let countdown_cancel_for_detector = call_end_countdown_cancel.clone();
-    let countdown_active_for_detector = call_end_countdown_active.clone();
-    let countdown_terminal_state_for_detector = call_end_countdown_terminal_state.clone();
-    let stop_for_detector = stop_flag.clone();
 
     tauri::Builder::default()
         .menu(build_app_menu)
@@ -2239,25 +2231,10 @@ fn main() {
             // as recording (and the menu items reflecting it).
             sync_tray_state(app.handle());
 
-            // Start call detection background loop
-            if commands::supports_call_detection() {
-                let config = minutes_core::config::Config::load();
-                let detector = Arc::new(call_detect::CallDetector::new(config.call_detection));
-                detector.start(
-                    app.handle().clone(),
-                    recording_for_detector,
-                    dictation_active.clone(),
-                    live_transcript_active.clone(),
-                    processing_clone,
-                    call_detect::CallEndAutoStopHandles {
-                        recording_started_by_call_detect: started_by_call_detect_for_detector,
-                        countdown_cancel: countdown_cancel_for_detector,
-                        countdown_active: countdown_active_for_detector,
-                        countdown_terminal_state: countdown_terminal_state_for_detector,
-                        stop_flag: stop_for_detector,
-                    },
-                );
-            }
+            // Call detection (auto-start recording on Zoom/Teams/Webex) was
+            // removed in the Minutes Madness fork. It probed browser tabs over
+            // Apple Events (an Automation TCC prompt), and Madness records via
+            // the in-panel button — never by call auto-detection.
 
             let app_control = app.handle().clone();
             std::thread::spawn(move || loop {
