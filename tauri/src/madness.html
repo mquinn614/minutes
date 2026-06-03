@@ -879,6 +879,13 @@
 
     function renderLeaderboard(game) {
       const res = game.results;
+      const conf = isConferences(game);
+      const totalMatchups = conf ? 31 : 15;
+      const champMatchup = conf ? 31 : 15;
+      // Per-round correct/total breakdown line (5 rounds for conferences).
+      const breakdownOf = (rc) => conf
+        ? `R16 ${rc[0] || 0}/16 · QF ${rc[1] || 0}/8 · SF ${rc[2] || 0}/4 · CF ${rc[3] || 0}/2 · GF ${rc[4] || 0}/1`
+        : `R16 ${rc[0] || 0}/8 · QF ${rc[1] || 0}/4 · SF ${rc[2] || 0}/2 · F ${rc[3] || 0}/1`;
       const standings = document.getElementById('standings');
       const mentions = document.getElementById('mentions');
 
@@ -895,8 +902,8 @@
           const sel = s.name === selectedName ? ' sel' : '';
           const leader = i === 0 ? ' leader' : '';
           return `<div class="standing-row${sel}${leader}" data-player="${s.name}">
-            <div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/15${gap}</span><span class="remove" title="Remove ${s.name}">✕</span></div>
-            <div class="breakdown">R16 ${rc[0]}/8 · QF ${rc[1]}/4 · SF ${rc[2]}/2 · F ${rc[3]}/1 · <span class="${champCls}">🏆 ${champ} ${s.champion_correct ? '✓' : '✗'}</span></div>
+            <div class="standing"><span class="rank">${i + 1}</span><span class="pname">${s.name}</span><span class="pts">${s.points} pts</span><span class="corr">${s.correct}/${totalMatchups}${gap}</span><span class="remove" title="Remove ${s.name}">✕</span></div>
+            <div class="breakdown">${breakdownOf(rc)} · <span class="${champCls}">🏆 ${champ} ${s.champion_correct ? '✓' : '✗'}</span></div>
           </div>`;
         }).join('');
         standings.querySelectorAll('.standing-row').forEach((row) => {
@@ -913,7 +920,7 @@
         standings.innerHTML =
           '<div class="overlay-hint">Picks are in. Score the bracket (record or Transcript Mode) to rank players.</div>' +
           game.players.map((p) => {
-            const champ = (p.picks && p.picks[15]) ? labelOf(game, p.picks[15]) : '—';
+            const champ = (p.picks && p.picks[champMatchup]) ? labelOf(game, p.picks[champMatchup]) : '—';
             const sel = p.name === selectedName ? ' sel' : '';
             return `<div class="standing-row${sel}" data-player="${p.name}">
             <div class="standing"><span class="rank">·</span><span class="pname">${p.name}</span><span class="pts">picks in</span><span class="corr">awaiting results</span><span class="remove" title="Remove ${p.name}">✕</span></div>
@@ -932,7 +939,8 @@
       }
 
       if (res) {
-        const entries = SEED_ORDER.map((s) => [s, res.counts[s] || 0]).sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+        const allSeeds = conf ? Array.from({ length: game.terms.length }, (_, i) => i + 1) : SEED_ORDER;
+        const entries = allSeeds.map((s) => [s, res.counts[s] || 0]).sort((a, b) => b[1] - a[1] || a[0] - b[0]);
         const max = Math.max(1, entries[0][1]);
         mentions.innerHTML = entries.map(([seed, c]) =>
           `<div class="bar-row"><div class="blabel"><span>${labelOf(game, seed)}</span><span>${c}</span></div><div class="btrack"><div class="bfill" style="width:${(c / max) * 100}%"></div></div></div>`
@@ -948,7 +956,10 @@
       const total = res ? res.total_mentions : 0;
       const scored = res ? `<span class="badge">scored</span>` : `<span class="badge">projected</span>`;
       const live = recording ? `<span class="badge live">● recording</span>` : '';
-      s.innerHTML = `${scored} ${live} <span>“${game.title}”</span> <span>${game.terms.length} seeds</span> <span>${game.players.length} players</span> <span>${total} total mentions</span>`;
+      const seedsLabel = (isConferences(game) && game.conferences && game.conferences.length === 2)
+        ? `${game.terms.length} seeds · ${game.conferences[0]} vs ${game.conferences[1]}`
+        : `${game.terms.length} seeds`;
+      s.innerHTML = `${scored} ${live} <span>“${game.title}”</span> <span>${seedsLabel}</span> <span>${game.players.length} players</span> <span>${total} total mentions</span>`;
     }
 
     function render(game) {
@@ -963,7 +974,8 @@
       const res = game.results;
       if (res && prevCounts) {
         const inc = [], dec = [];
-        for (const s of SEED_ORDER) {
+        const diffSeeds = isConferences(game) ? Array.from({ length: game.terms.length }, (_, i) => i + 1) : SEED_ORDER;
+        for (const s of diffSeeds) {
           const d = (res.counts[s] || 0) - (prevCounts[s] || 0);
           for (let i = 0; i < d; i++) inc.push(s);
           if (d < 0) dec.push(s);
@@ -1005,17 +1017,20 @@
       renderLeaderboard(game);
       renderRecent();
 
+      const conf = isConferences(game);
+      const allSeeds = conf ? Array.from({ length: game.terms.length }, (_, i) => i + 1) : SEED_ORDER;
       const counts = {};
-      for (const s of SEED_ORDER) counts[s] = game.results ? (game.results.counts[s] || 0) : 0;
-      const full = resolve(counts);
+      for (const s of allSeeds) counts[s] = game.results ? (game.results.counts[s] || 0) : 0;
+      const full = conf ? resolveConferencesUpTo(counts, 99) : resolve(counts);
+      const maxRounds = conf ? 5 : 4;
 
       animating = true;
-      // Frame 0: the 16 seeds with their final counts; every inner round empty.
+      // Frame 0: the seeds with their final counts; every inner round empty.
       flashSeeds = [];
       renderBracket(game, 0);
       await sleep(450);
-      // Advance the winners of each round in turn.
-      for (let round = 1; round <= 4 && animating; round++) {
+      // Advance the winners of each round in turn (5 rounds in conferences mode).
+      for (let round = 1; round <= maxRounds && animating; round++) {
         flashSeeds = full.matchups.filter((m) => m.round === round && m.winner).map((m) => m.winner);
         renderBracket(game, round);
         await sleep(ROUND_REVEAL_MS);
@@ -1068,7 +1083,10 @@
 
     function countsEqual(a, b) {
       if (!a || !b) return false;
-      for (const s of SEED_ORDER) if ((a[s] || 0) !== (b[s] || 0)) return false;
+      // Compare every seed present in either map so 32-seed (conferences)
+      // changes on the Sales side (17-32) aren't missed during live updates.
+      const seeds = new Set([...Object.keys(a), ...Object.keys(b)]);
+      for (const s of seeds) if ((a[s] || 0) !== (b[s] || 0)) return false;
       return true;
     }
 
