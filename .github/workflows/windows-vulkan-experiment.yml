@@ -143,9 +143,11 @@ jobs:
           GGML_AVX512_VNNI: "OFF"
           GGML_AVX512_BF16: "OFF"
 
-      - name: Rename desktop binary
+      - name: Rename desktop binary (no-install / portable)
         shell: bash
-        run: cp -f target/release/minutes-app.exe minutes-desktop-windows-x64-vulkan.exe
+        # Self-describing name: this is the raw double-click-and-run binary,
+        # distinct from the NSIS installer below. Helps testers who skip the README.
+        run: cp -f target/release/minutes-app.exe minutes-desktop-windows-x64-vulkan-no-install.exe
 
       - name: Rename NSIS installer
         shell: bash
@@ -162,6 +164,6 @@ jobs:
         with:
           name: minutes-desktop-windows-x64-vulkan
           path: |
-            minutes-desktop-windows-x64-vulkan.exe
+            minutes-desktop-windows-x64-vulkan-no-install.exe
             minutes-desktop-windows-x64-vulkan-setup.exe
           if-no-files-found: error
