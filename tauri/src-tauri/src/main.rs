@@ -21,7 +21,6 @@ mod call_capture;
 mod cli_setup;
 mod commands;
 mod context;
-mod palette_dispatch;
 mod secret_store;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
@@ -1267,10 +1266,6 @@ fn main() {
     let screen_share_hidden = Arc::new(AtomicBool::new(
         startup_config_snapshot.privacy.hide_from_screen_share,
     ));
-    let palette_shortcut_enabled = Arc::new(AtomicBool::new(false));
-    let palette_shortcut = Arc::new(Mutex::new(startup_config_snapshot.palette.shortcut.clone()));
-    let palette_lifecycle = Arc::new(Mutex::new(commands::PaletteLifecycle::default()));
-    let palette_reopen_pending = Arc::new(AtomicBool::new(false));
     let recording_clone = recording.clone();
     let stop_clone = stop_flag.clone();
     let recording_started_by_call_detect = Arc::new(AtomicBool::new(false));
@@ -1337,23 +1332,8 @@ fn main() {
                         )
                         .ok()
                         .map(|shortcut| shortcut.id());
-                    let palette_shortcut_value = state
-                        .palette_shortcut
-                        .lock()
-                        .ok()
-                        .map(|value| value.clone())
-                        .unwrap_or_else(|| "CmdOrCtrl+Shift+K".to_string());
-                    let palette_shortcut_id =
-                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
-                            palette_shortcut_value.as_str(),
-                        )
-                        .ok()
-                        .map(|shortcut| shortcut.id());
-
                     if Some(shortcut_id) == live_shortcut_id {
                         commands::handle_live_shortcut_event(app, event.state());
-                    } else if Some(shortcut_id) == palette_shortcut_id {
-                        commands::handle_palette_shortcut_event(app, event.state());
                     } else {
                         commands::handle_global_hotkey_event(app, event.state());
                     }
@@ -1408,10 +1388,6 @@ fn main() {
             update_install_running: Arc::new(AtomicBool::new(false)),
             update_install_cancel: Arc::new(AtomicBool::new(false)),
             update_install_state: Arc::new(Mutex::new(commands::UpdateUiState::default())),
-            palette_shortcut_enabled: palette_shortcut_enabled.clone(),
-            palette_shortcut: palette_shortcut.clone(),
-            palette_lifecycle: palette_lifecycle.clone(),
-            palette_reopen_pending: palette_reopen_pending.clone(),
             recording_started_by_call_detect: recording_started_by_call_detect.clone(),
             call_end_countdown_cancel: call_end_countdown_cancel.clone(),
             call_end_countdown_active: call_end_countdown_active.clone(),
@@ -1536,32 +1512,6 @@ fn main() {
                     };
                 }
             }
-
-            // Register the palette shortcut if the config opts into it.
-            if startup_config.palette.shortcut_enabled {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let shortcut = if startup_config.palette.shortcut.is_empty() {
-                    "CmdOrCtrl+Shift+K".to_string()
-                } else {
-                    startup_config.palette.shortcut.clone()
-                };
-                if let Err(e) = app.global_shortcut().register(shortcut.as_str()) {
-                    eprintln!(
-                        "[palette-shortcut] startup register failed ({}): {}",
-                        shortcut, e
-                    );
-                } else {
-                    let state = app.state::<commands::AppState>();
-                    state
-                        .palette_shortcut_enabled
-                        .store(true, Ordering::Relaxed);
-                    if let Ok(mut current) = state.palette_shortcut.lock() {
-                        *current = shortcut;
-                    };
-                }
-            }
-
-            commands::maybe_show_palette_first_run_notice(app.handle());
 
             // Tray menu
             let open_item =
@@ -1941,17 +1891,6 @@ fn main() {
                     api.prevent_close();
                     window.hide().ok();
                 }
-                tauri::WindowEvent::Focused(false) if window.label() == "palette" => {
-                    let app_handle = window.app_handle().clone();
-                    let state = app_handle.state::<commands::AppState>();
-                    let is_open = match state.palette_lifecycle.lock() {
-                        Ok(guard) => *guard == commands::PaletteLifecycle::Open,
-                        Err(poisoned) => *poisoned.into_inner() == commands::PaletteLifecycle::Open,
-                    };
-                    if is_open {
-                        commands::close_palette_window(&app_handle);
-                    }
-                }
                 // Track macOS system appearance changes via the main
                 // window's ThemeChanged event. Tao registers an
                 // `AppleInterfaceThemeChangedNotification` observer on
@@ -2067,12 +2006,6 @@ fn main() {
             commands::cmd_check_whats_new,
             commands::cmd_get_whats_new,
             commands::cmd_dismiss_whats_new,
-            commands::palette_close,
-            commands::palette_current_meeting,
-            commands::cmd_palette_settings,
-            commands::cmd_set_palette_shortcut,
-            palette_dispatch::palette_list,
-            palette_dispatch::palette_execute,
         ])
         .build(tauri::generate_context!())
         .expect("error while building minutes app")

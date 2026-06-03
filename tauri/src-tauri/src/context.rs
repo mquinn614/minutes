@@ -1,5 +1,5 @@
 use minutes_core::config::Config;
-use minutes_core::markdown::{split_frontmatter, Frontmatter, IntentKind};
+use minutes_core::markdown::IntentKind;
 use minutes_core::search::{self, SearchFilters};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -234,100 +234,6 @@ pub fn create_workspace(config: &Config) -> Result<PathBuf, String> {
     Ok(workspace)
 }
 
-/// Generate CURRENT_MEETING.md for discussing a specific meeting.
-pub fn generate_meeting_context(meeting_path: &Path, config: &Config) -> Result<String, String> {
-    let content =
-        std::fs::read_to_string(meeting_path).map_err(|e| format!("Cannot read meeting: {}", e))?;
-
-    let (fm_str, body) = split_frontmatter(&content);
-    let fm: Frontmatter =
-        serde_yaml::from_str(fm_str).map_err(|e| format!("Bad frontmatter: {}", e))?;
-
-    let content_type = match fm.r#type {
-        minutes_core::markdown::ContentType::Meeting => "meeting",
-        minutes_core::markdown::ContentType::Memo => "memo",
-        minutes_core::markdown::ContentType::Dictation => "dictation",
-    };
-
-    let mut md = String::with_capacity(4096);
-    md.push_str("# Meeting Context\n\n");
-    md.push_str("You are helping the user analyze a specific meeting recording.\n\n");
-
-    md.push_str(&format!("## {}\n", fm.title));
-    md.push_str(&format!(
-        "- **Date**: {}\n",
-        fm.date.format("%B %d, %Y %H:%M")
-    ));
-    md.push_str(&format!("- **Duration**: {}\n", fm.duration));
-    md.push_str(&format!("- **Type**: {}\n", content_type));
-    if !fm.attendees.is_empty() {
-        md.push_str(&format!("- **Attendees**: {}\n", fm.attendees.join(", ")));
-    }
-    if let Some(ref ctx) = fm.context {
-        md.push_str(&format!("- **Context**: {}\n", ctx));
-    }
-    if let Some(ref cal) = fm.calendar_event {
-        md.push_str(&format!("- **Calendar**: {}\n", cal));
-    }
-    md.push('\n');
-
-    // Decisions
-    if !fm.decisions.is_empty() {
-        md.push_str("## Decisions Made\n");
-        for d in &fm.decisions {
-            md.push_str(&format!("- {}", d.text));
-            if let Some(ref topic) = d.topic {
-                md.push_str(&format!(" (topic: {})", topic));
-            }
-            md.push('\n');
-        }
-        md.push('\n');
-    }
-
-    // Open intents (action items + commitments)
-    let open_intents: Vec<_> = fm.intents.iter().filter(|i| i.status == "open").collect();
-    if !open_intents.is_empty() {
-        md.push_str("## Open Action Items\n");
-        for i in open_intents {
-            md.push_str(&format!("- **{}**: {}", intent_label(i.kind), i.what));
-            if let Some(ref who) = i.who {
-                md.push_str(&format!(" (@{})", who));
-            }
-            if let Some(ref by) = i.by_date {
-                md.push_str(&format!(" — due {}", by));
-            }
-            md.push('\n');
-        }
-        md.push('\n');
-    }
-
-    // Include the full body (summary + transcript)
-    md.push_str("## Full Content\n\n");
-    md.push_str("The complete meeting transcript follows. It is also available at:\n");
-    md.push_str(&format!("`{}`\n\n", meeting_path.display()));
-    // Truncate very long transcripts to avoid blowing out context
-    let body_chars: Vec<char> = body.chars().collect();
-    if body_chars.len() > 12000 {
-        let truncated: String = body_chars[..12000].iter().collect();
-        md.push_str(&truncated);
-        md.push_str("\n\n...[transcript truncated — read the full file for the rest]\n");
-    } else {
-        md.push_str(body);
-    }
-
-    md.push_str("\n\n## Instructions\n\n");
-    md.push_str("- Answer questions about this meeting\n");
-    md.push_str("- Help draft follow-up messages based on the discussion\n");
-    md.push_str("- Extract key takeaways the user might have missed\n");
-    md.push_str(&format!(
-        "- All meetings are at `{}` if you need to cross-reference\n",
-        config.output_dir.display()
-    ));
-    md.push_str("- You can create files in this directory to save artifacts\n");
-
-    Ok(md)
-}
-
 /// Generate assistant instructions for general meeting assistant mode.
 pub fn generate_assistant_context(config: &Config) -> Result<String, String> {
     let mut md = String::with_capacity(6144);
@@ -537,15 +443,6 @@ pub fn write_assistant_context(workspace: &Path, config: &Config) -> Result<(), 
         write_atomic(&workspace.join(file_name), &content)?;
     }
     Ok(())
-}
-
-pub fn write_active_meeting_context(
-    workspace: &Path,
-    meeting_path: &Path,
-    config: &Config,
-) -> Result<(), String> {
-    let meeting_md = generate_meeting_context(meeting_path, config)?;
-    write_atomic(&workspace.join(ACTIVE_MEETING_FILE), &meeting_md)
 }
 
 pub fn write_active_artifact_context(workspace: &Path, artifact_path: &Path) -> Result<(), String> {
