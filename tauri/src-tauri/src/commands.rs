@@ -10531,6 +10531,7 @@ fn run_live_session(
     emit_partials: bool,
     partial_interval_secs: Option<f64>,
     model_override: Option<String>,
+    source: minutes_core::live_capture::LiveAudioSource,
 ) {
     let _guard = LiveActiveGuard {
         active,
@@ -10596,6 +10597,7 @@ fn run_live_session(
         live_context_session_id.clone(),
         emit_partials,
         partial_interval_secs,
+        source,
     );
 
     stop_flag.store(false, Ordering::Relaxed);
@@ -10730,12 +10732,21 @@ pub fn cmd_start_live_transcript(
     partials: Option<bool>,
     partial_secs: Option<f64>,
     model: Option<String>,
+    source: Option<String>,
 ) -> Result<(), String> {
     try_acquire_live(&state)?;
 
     let active = state.live_transcript_active.clone();
     let stop_flag = state.live_transcript_stop_flag.clone();
     stop_flag.store(false, Ordering::Relaxed);
+
+    // Minutes Madness source picker: "system-audio" taps the default output
+    // natively; anything else (or absent) means the configured microphone.
+    // `Microphone(None)` lets the core resolve the configured device.
+    let live_source = match source.as_deref() {
+        Some(s) => minutes_core::live_capture::LiveAudioSource::parse(s, None),
+        None => minutes_core::live_capture::LiveAudioSource::Microphone(None),
+    };
 
     let emit_partials = partials.unwrap_or(false);
     let app_clone = app.clone();
@@ -10748,6 +10759,7 @@ pub fn cmd_start_live_transcript(
             emit_partials,
             partial_secs,
             model,
+            live_source,
         )
     });
 
@@ -10831,7 +10843,16 @@ pub fn handle_live_shortcut_event(
         stop_flag.store(false, Ordering::Relaxed);
         let app_clone = app.clone();
         std::thread::spawn(move || {
-            run_live_session(app_clone, active, stop_flag, None, false, None, None)
+            run_live_session(
+                app_clone,
+                active,
+                stop_flag,
+                None,
+                false,
+                None,
+                None,
+                minutes_core::live_capture::LiveAudioSource::Microphone(None),
+            )
         });
         if let Some(win) = app.get_webview_window("main") {
             win.emit("live-transcript:started", ()).ok();

@@ -1413,6 +1413,7 @@
         const liveOpts = {
           cap: Math.max(1, Math.round(c.cap || 3)),
           partials: !!c.partials,
+          source: audioSource, // 'microphone' | 'system-audio' (from the Audio modal)
         };
         if (c.partials && typeof c.partialSecs === 'number') liveOpts.partialSecs = c.partialSecs;
         if (modelOverride) liveOpts.model = modelOverride;

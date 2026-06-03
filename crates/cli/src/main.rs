@@ -8920,7 +8920,14 @@ fn cmd_live(config: &Config) -> Result<()> {
         }
     });
 
-    match minutes_core::live_transcript::run(stop, config, live_context_session_id, false, None) {
+    match minutes_core::live_transcript::run(
+        stop,
+        config,
+        live_context_session_id,
+        false,
+        None,
+        minutes_core::live_capture::LiveAudioSource::Microphone(None),
+    ) {
         Ok((lines, duration, path)) => {
             eprintln!("\nLive transcript complete:");
             eprintln!("  {} utterances in {:.0}s", lines, duration);

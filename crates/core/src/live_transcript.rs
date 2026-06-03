@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::{LiveTranscriptError, MinutesError, TranscribeError};
+use crate::live_capture::{LiveAudioSource, LiveCapture};
 use crate::pid;
-use crate::streaming::AudioStream;
 use crate::streaming_whisper::StreamingWhisper;
 use crate::transcription_coordinator::{collapse_noise_markers, strip_foreign_script};
 use crate::vad::Vad;
@@ -545,6 +545,7 @@ pub fn run(
     existing_context_session_id: Option<String>,
     emit_partials: bool,
     partial_interval_secs: Option<f64>,
+    source: LiveAudioSource,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     let mark_precreated_session_failed = |error: &MinutesError| {
         if let Some(session_id) = existing_context_session_id.as_deref() {
@@ -608,6 +609,7 @@ pub fn run(
         context_session_id.clone(),
         emit_partials,
         partial_interval_secs,
+        source,
     ) {
         Ok((lines, duration, path)) => {
             if let Some(session_id) = context_session_id.as_deref() {
@@ -665,21 +667,40 @@ fn run_inner(
     context_session_id: Option<String>,
     emit_partials: bool,
     partial_interval_secs: Option<f64>,
+    source: LiveAudioSource,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     clear_live_partial(emit_partials); // drop any stale partial from a crashed prior session
     let mut whisper_ctx: Option<whisper_rs::WhisperContext> = None;
 
-    // Start audio stream FIRST — validate mic access before truncating any files
-    let device_override = config.recording.device.as_deref();
-    let mut stream = AudioStream::start(device_override)?;
-    tracing::info!(device = %stream.device_name, "live transcript audio stream started");
+    // Resolve the capture source. `Microphone(None)` (the default for the CLI,
+    // the ⌘⇧L shortcut, and the Madness "mic" choice) falls back to the
+    // configured recording device, preserving prior behavior. `SystemAudio`
+    // (Madness "system audio") taps the default output natively. An explicit
+    // device pins that microphone.
+    let source = match source {
+        LiveAudioSource::Microphone(None) => {
+            LiveAudioSource::Microphone(config.recording.device.clone())
+        }
+        other => other,
+    };
+    let is_mic = matches!(source, LiveAudioSource::Microphone(_));
+    // The input-device change monitor only makes sense for microphone capture;
+    // the system-audio tap follows the default output itself.
+    let device_override: Option<&str> = match &source {
+        LiveAudioSource::Microphone(device) => device.as_deref(),
+        LiveAudioSource::SystemAudio => None,
+    };
 
-    // Device change monitor for auto-reconnection. Pinned when the user
-    // supplied an explicit device override.
+    // Start audio stream FIRST — validate mic/tap access before truncating files
+    let mut stream = LiveCapture::start(&source)?;
+    tracing::info!(device = %stream.device_label(), source = source.as_str(), "live transcript audio stream started");
+
+    // Device change monitor for auto-reconnection (microphone only). Pinned when
+    // the user supplied an explicit device override.
     let mut device_monitor = if device_override.is_some() {
-        crate::device_monitor::DeviceMonitor::pinned(&stream.device_name)
+        crate::device_monitor::DeviceMonitor::pinned(stream.device_label())
     } else {
-        crate::device_monitor::DeviceMonitor::new(&stream.device_name)
+        crate::device_monitor::DeviceMonitor::new(stream.device_label())
     };
 
     // Only now create the writer (which truncates the JSONL and WAV files)
@@ -868,17 +889,17 @@ fn run_inner(
         }
 
         // Check for stream error or device change — attempt reconnection
-        if stream.has_error() || device_monitor.has_device_changed() {
-            let old_name = stream.device_name.clone();
+        if stream.has_error() || (is_mic && device_monitor.has_device_changed()) {
+            let old_name = stream.device_label().to_string();
             tracing::info!(device = %old_name, "audio stream error or device change — reconnecting");
             drop(stream);
-            match AudioStream::start(device_override) {
+            match LiveCapture::start(&source) {
                 Ok(new_stream) => {
                     tracing::info!(
-                        old = %old_name, new = %new_stream.device_name,
+                        old = %old_name, new = %new_stream.device_label(),
                         "live transcript audio stream reconnected"
                     );
-                    device_monitor.update_device(&new_stream.device_name);
+                    device_monitor.update_device(new_stream.device_label());
                     stream = new_stream;
                     // Discard any partial utterance — mic dropped mid-speech,
                     // pre-reconnect audio is unreliable. Splicing pre+post
@@ -936,22 +957,22 @@ fn run_inner(
 
         // Receive audio chunk (100ms timeout for stop checks)
         let chunk = match stream
-            .receiver
+            .receiver()
             .recv_timeout(std::time::Duration::from_millis(100))
         {
             Ok(chunk) => chunk,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 // Stream died — try to reconnect (device may have changed)
-                let old_name = stream.device_name.clone();
+                let old_name = stream.device_label().to_string();
                 tracing::warn!("audio stream disconnected — attempting reconnect");
-                match AudioStream::start(device_override) {
+                match LiveCapture::start(&source) {
                     Ok(new_stream) => {
                         tracing::info!(
-                            old = %old_name, new = %new_stream.device_name,
+                            old = %old_name, new = %new_stream.device_label(),
                             "live transcript audio stream reconnected after disconnect"
                         );
-                        device_monitor.update_device(&new_stream.device_name);
+                        device_monitor.update_device(new_stream.device_label());
                         stream = new_stream;
                         // Discard partial utterance — see comment above the
                         // device-change reconnect branch for rationale.
@@ -1132,6 +1153,7 @@ pub fn run(
     _existing_context_session_id: Option<String>,
     _emit_partials: bool,
     _partial_interval_secs: Option<f64>,
+    _source: LiveAudioSource,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
     Err(
         TranscribeError::ModelLoadError("live transcript requires the whisper feature".into())
@@ -2793,6 +2815,7 @@ mod tests {
                 Some(session.id.clone()),
                 false,
                 None,
+                LiveAudioSource::Microphone(None),
             )
             .unwrap_err();
 
