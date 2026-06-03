@@ -178,6 +178,29 @@
     .bw-row input { flex: 1; background: var(--bg-hover); color: var(--text); border: 1px solid var(--border-mid); border-radius: 6px; padding: 5px 8px; font-family: 'Geist Mono', monospace; font-size: 11px; }
     .bw-row .bw-x { cursor: pointer; color: var(--text-tertiary); font-size: 12px; padding: 0 4px; flex-shrink: 0; }
     .bw-row .bw-x:hover { color: var(--red); }
+    /* Classic (16) vs Conferences (32) mode toggle */
+    .bw-mode { display: flex; gap: 6px; margin-bottom: 6px; }
+    .bw-mode button {
+      flex: 1; background: var(--bg-hover); color: var(--text-secondary);
+      border: 1px solid var(--border-mid); border-radius: 6px; padding: 6px 8px;
+      font-family: 'Geist Mono', monospace; font-size: 11px; cursor: pointer;
+    }
+    .bw-mode button:hover { color: var(--text); }
+    .bw-mode button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    /* Conferences (32) two-column editor: a theme name + 16 rows per side. */
+    #bw-conf { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin: 6px 0 10px; }
+    .bw-cols { flex: 1 1 auto; min-height: 0; display: flex; gap: 16px; }
+    .bw-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .bw-col .bw-rows { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 8px; margin-top: 6px; }
+    .bw-theme {
+      width: 100%; box-sizing: border-box; background: var(--bg-hover); color: var(--text);
+      border: 1px solid var(--border-mid); border-radius: 6px; padding: 7px 9px;
+      font-family: 'Geist Mono', monospace; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .bw-theme::placeholder { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    /* Conferences mode needs more width for the two columns side by side. */
+    #buzzwords-modal .modal.conf-mode { max-width: 820px; }
 
     .status {
       font-family: 'Geist Mono', monospace;
@@ -370,7 +393,7 @@
       <a class="attribution" id="attribution" title="Built on top of Minutes by Mat Silverstein — open the project on GitHub">Built on top of Minutes ↗</a>
     </div>
     <span class="spacer"></span>
-    <button id="buzzwords-btn" title="Edit the 16 buzzwords and their seeding">Modify Buzzwords</button>
+    <button id="buzzwords-btn" title="Edit the buzzwords and their seeding (16, or 32 for Tech-vs-Sales conferences)">Modify Buzzwords</button>
     <button id="audio-btn" title="Choose which microphone to record from">🎙 Audio</button>
     <button id="record-btn" class="primary" title="Start a live recording and score the bracket as people talk">● Start recording</button>
     <button id="transcript-btn" title="Score against a transcript file or pasted text. No recording needed.">Transcript Mode</button>
@@ -486,11 +509,27 @@
   </div>
 
   <div class="modal-backdrop" id="buzzwords-modal">
-    <div class="modal wide">
+    <div class="modal wide" id="bw-modal">
       <h3>Modify Buzzwords</h3>
+      <div class="bw-mode" id="bw-mode">
+        <button type="button" data-mode="16" class="active">Classic · 16 teams</button>
+        <button type="button" data-mode="32">Conferences · 32 teams</button>
+      </div>
       <input type="text" id="bw-title" placeholder="Bracket title (e.g. Q1 2026 All-Hands)" />
-      <p class="diag">Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add variants with <code>|</code>, e.g. <code>AI | A.I. | artificial intelligence</code>.</p>
+      <p class="diag" id="bw-hint">Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add variants with <code>|</code>, e.g. <code>AI | A.I. | artificial intelligence</code>.</p>
       <div id="bw-rows"></div>
+      <div id="bw-conf" style="display:none;">
+        <div class="bw-cols">
+          <div class="bw-col">
+            <input type="text" class="bw-theme" id="bw-theme-a" placeholder="Conference name (e.g. Tech)" />
+            <div class="bw-rows" id="bw-rows-a"></div>
+          </div>
+          <div class="bw-col">
+            <input type="text" class="bw-theme" id="bw-theme-b" placeholder="Conference name (e.g. Sales)" />
+            <div class="bw-rows" id="bw-rows-b"></div>
+          </div>
+        </div>
+      </div>
       <div class="diag" id="bw-msg"></div>
       <div class="actions" style="flex-direction:row; gap:10px; justify-content:flex-end; align-items:center;">
         <a id="bw-reset" style="margin-right:auto;">Reset to defaults</a>
@@ -1094,25 +1133,75 @@
     // Default 16 buzzwords prefilled into the Modify Buzzwords editor on first
     // run. Keep in sync with examples/minutes-madness/all-hands-terms.txt.
     const DEFAULT_TERMS = ['game changer | game-changer | gamechanger', 'deep dive | deep-dive | deepdive', 'headwinds', 'leverage | leveraging', 'circle back | circle-back', 'low-hanging fruit | low hanging fruit', 'double-click | double click', 'bandwidth', 'north star | northstar', 'value-add | value add', 'paradigm shift | paradigm-shift', 'move the needle', 'drill down | drill-down | drilldown', 'table stakes', 'RTO | return to the office | return to office', 'pivot | pivoting | pivoted'];
+    // Default second-conference set for the 32-team "Conferences" mode. The
+    // first conference reuses DEFAULT_TERMS (Tech); this is the Sales side.
+    const DEFAULT_TERMS_B = ['customers | customer', 'product | products', 'revenue', 'bookings | booking', 'stock price | stock', 'focus | focused | focusing', 'market | markets', 'drive | driving', 'growth | growing', 'software', 'core', 'net new', 'private equity | PE', 'scale | scalable | scaling', 'fundamentals | fundamental', 'execution | execute | executing'];
+    const DEFAULT_CONF_NAMES = ['Tech', 'Sales'];
 
     function termToLine(t) { return [t.label, ...(t.aliases || [])].join(' | '); }
 
+    // Editor mode: 16 (classic, single column) or 32 (conferences, two columns).
+    let bwMode = 16;
+
     function openBuzzwordsModal() {
       const titleEl = document.getElementById('bw-title');
-      const lines = (current && current.terms && current.terms.length === 16)
-        ? [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine)
-        : DEFAULT_TERMS.slice();
       // Always start the title blank so the placeholder tip is visible. If the
       // user saves without typing one, saveBuzzwords keeps the existing
       // bracket's name (when editing) or auto-names "My Bracket - mm/dd/yy".
       titleEl.value = '';
-      renderBwRows(lines);
+      const isConf = !!(current && current.terms && current.terms.length === 32);
+      if (isConf) {
+        const sorted = [...current.terms].sort((a, b) => a.seed - b.seed);
+        const names = (current.conferences && current.conferences.length === 2) ? current.conferences : DEFAULT_CONF_NAMES;
+        setBwMode(32, {
+          a: sorted.slice(0, 16).map(termToLine),
+          b: sorted.slice(16, 32).map(termToLine),
+          names,
+        });
+      } else {
+        const lines = (current && current.terms && current.terms.length === 16)
+          ? [...current.terms].sort((a, b) => a.seed - b.seed).map(termToLine)
+          : DEFAULT_TERMS.slice();
+        setBwMode(16, { single: lines });
+      }
       document.getElementById('bw-msg').textContent = '';
       document.getElementById('buzzwords-modal').classList.add('show');
     }
 
-    function renderBwRows(lines) {
-      const wrap = document.getElementById('bw-rows');
+    // Switch the editor between Classic (16) and Conferences (32). `data` seeds
+    // the rows; when omitted, sensible defaults fill the freshly-shown mode so
+    // toggling never lands on empty inputs.
+    function setBwMode(mode, data) {
+      bwMode = mode === 32 ? 32 : 16;
+      data = data || {};
+      const single = document.getElementById('bw-rows');
+      const conf = document.getElementById('bw-conf');
+      const modal = document.getElementById('bw-modal');
+      const hint = document.getElementById('bw-hint');
+      document.querySelectorAll('#bw-mode button').forEach((b) => {
+        b.classList.toggle('active', Number(b.dataset.mode) === bwMode);
+      });
+      if (bwMode === 32) {
+        single.style.display = 'none';
+        conf.style.display = 'flex';
+        modal.classList.add('conf-mode');
+        hint.innerHTML = 'Two conferences of 16 — name each (e.g. <code>Tech</code> vs <code>Sales</code>). The two winners meet in the Grand Final. Drag to reseed; ✕ clears a slot.';
+        renderBwRows(data.a || DEFAULT_TERMS.slice(), document.getElementById('bw-rows-a'));
+        renderBwRows(data.b || DEFAULT_TERMS_B.slice(), document.getElementById('bw-rows-b'));
+        const names = data.names || DEFAULT_CONF_NAMES;
+        document.getElementById('bw-theme-a').value = names[0] || '';
+        document.getElementById('bw-theme-b').value = names[1] || '';
+      } else {
+        conf.style.display = 'none';
+        single.style.display = 'block';
+        modal.classList.remove('conf-mode');
+        hint.innerHTML = 'Drag to reseed (1 = top seed). ✕ clears a slot to retype. Add variants with <code>|</code>, e.g. <code>AI | A.I. | artificial intelligence</code>.';
+        renderBwRows(data.single || DEFAULT_TERMS.slice(), single);
+      }
+    }
+
+    function renderBwRows(lines, wrap) {
+      wrap = wrap || document.getElementById('bw-rows');
       wrap.innerHTML = lines.map((line, i) => `
         <div class="bw-row" data-i="${i}">
           <span class="bw-grip" title="Drag to reseed">⠿</span>
@@ -1205,7 +1294,9 @@
         }
         if (!dragging) return;
         const els = document.elementsFromPoint(e.clientX, e.clientY);
-        const target = els.find((el) => el && el.classList && el.classList.contains('bw-row') && el !== dragging);
+        // Only reorder within this column — never let a Tech row jump into the
+        // Sales column (and vice versa) in conferences mode.
+        const target = els.find((el) => el && el.classList && el.classList.contains('bw-row') && el !== dragging && wrap.contains(el));
         if (!target) return;
         const r = target.getBoundingClientRect();
         const after = (e.clientY - r.top) > r.height / 2;
@@ -1218,13 +1309,14 @@
         if (!dragging) return;
         dragging.classList.remove('dragging');
         dragging = null;
-        renumberBwRows();
+        renumberBwRows(wrap);
       };
       wrap.addEventListener('pointerup', endDrag);
       wrap.addEventListener('pointercancel', endDrag);
     }
-    function renumberBwRows() {
-      [...document.querySelectorAll('#bw-rows .bw-row')].forEach((row, i) => {
+    function renumberBwRows(wrap) {
+      wrap = wrap || document.getElementById('bw-rows');
+      [...wrap.querySelectorAll('.bw-row')].forEach((row, i) => {
         row.dataset.i = i; row.querySelector('.bw-seed').textContent = (i + 1) + '.';
       });
     }
@@ -1238,9 +1330,26 @@
     async function saveBuzzwords() {
       const msg = document.getElementById('bw-msg');
       let title = document.getElementById('bw-title').value.trim();
-      const lines = [...document.querySelectorAll('#bw-rows .bw-row input')].map((i) => i.value.trim());
-      const filled = lines.filter((l) => l.length > 0);
-      if (filled.length !== 16) { msg.style.color = 'var(--red)'; msg.textContent = `Fill all 16 buzzwords (${filled.length}/16).`; return; }
+      msg.style.color = 'var(--red)';
+
+      // Collect lines + (for conferences) the two theme names.
+      let filled, conferences = null;
+      if (bwMode === 32) {
+        const a = [...document.querySelectorAll('#bw-rows-a .bw-row input')].map((i) => i.value.trim()).filter((l) => l.length > 0);
+        const b = [...document.querySelectorAll('#bw-rows-b .bw-row input')].map((i) => i.value.trim()).filter((l) => l.length > 0);
+        const nameA = document.getElementById('bw-theme-a').value.trim();
+        const nameB = document.getElementById('bw-theme-b').value.trim();
+        if (a.length !== 16) { msg.textContent = `Fill all 16 in the first conference (${a.length}/16).`; return; }
+        if (b.length !== 16) { msg.textContent = `Fill all 16 in the second conference (${b.length}/16).`; return; }
+        if (!nameA || !nameB) { msg.textContent = 'Name both conferences (e.g. Tech and Sales).'; return; }
+        filled = a.concat(b);          // seeds 1-16 = conf A, 17-32 = conf B
+        conferences = [nameA, nameB];
+      } else {
+        const lines = [...document.querySelectorAll('#bw-rows .bw-row input')].map((i) => i.value.trim());
+        filled = lines.filter((l) => l.length > 0);
+        if (filled.length !== 16) { msg.textContent = `Fill all 16 buzzwords (${filled.length}/16).`; return; }
+      }
+
       if (!title) {
         // No title typed: keep the existing bracket's name when editing,
         // otherwise auto-name a fresh one "My Bracket - mm/dd/yy".
@@ -1257,7 +1366,7 @@
         if (!(await confirmDialog('Changing buzzwords clears the current players. Continue?'))) return;
       }
       try {
-        const game = await invoke('cmd_madness_set_terms', { slug: current ? current.slug : null, title, lines: filled });
+        const game = await invoke('cmd_madness_set_terms', { slug: current ? current.slug : null, title, lines: filled, conferences });
         document.getElementById('buzzwords-modal').classList.remove('show');
         selectedName = null; selectedPicks = null; prevCounts = null; recentMentions = []; flashSeeds = []; correctSeeds = [];
         render(game);
@@ -1936,10 +2045,24 @@
     document.getElementById('buzzwords-btn').addEventListener('click', openBuzzwordsModal);
     document.getElementById('bw-cancel').addEventListener('click', () => document.getElementById('buzzwords-modal').classList.remove('show'));
     document.getElementById('bw-save').addEventListener('click', saveBuzzwords);
-    // Reload the editor rows with the built-in default 16 (handy for refreshing
-    // a bracket whose saved terms predate an alias update). Title left as-is.
+    // Classic (16) ⇄ Conferences (32) toggle. Switching reseeds the freshly
+    // shown mode with its defaults so neither side is ever left empty.
+    document.querySelectorAll('#bw-mode button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = Number(btn.dataset.mode);
+        if (mode === bwMode) return;
+        setBwMode(mode);
+        document.getElementById('bw-msg').textContent = '';
+      });
+    });
+    // Reload the editor rows with the built-in defaults for the current mode
+    // (handy for refreshing terms that predate an alias update). Title as-is.
     document.getElementById('bw-reset').addEventListener('click', () => {
-      renderBwRows(DEFAULT_TERMS.slice());
+      if (bwMode === 32) {
+        setBwMode(32, { a: DEFAULT_TERMS.slice(), b: DEFAULT_TERMS_B.slice(), names: DEFAULT_CONF_NAMES });
+      } else {
+        renderBwRows(DEFAULT_TERMS.slice(), document.getElementById('bw-rows'));
+      }
       document.getElementById('bw-msg').textContent = '';
     });
     document.getElementById('transcript-btn').addEventListener('click', openTranscriptModal);

@@ -11786,6 +11786,7 @@ pub fn cmd_madness_set_terms(
     slug: Option<String>,
     title: String,
     lines: Vec<String>,
+    conferences: Option<Vec<String>>,
 ) -> Result<minutes_core::madness::BracketGame, String> {
     use minutes_core::madness;
     let title = title.trim();
@@ -11812,11 +11813,21 @@ pub fn cmd_madness_set_terms(
         None => madness::BracketGame::new(title, None, terms).map_err(|e| e.to_string())?,
     };
     // Keep conference labels consistent with the term count. A 32-term bracket
-    // is conferences mode: default the two wing names if none are set (the
-    // panel editor only collects term lines). A 16-term bracket has no
-    // conferences, so drop any stale labels left from a prior 32-term round.
+    // is conferences mode: use the two theme names the editor sends (trimmed,
+    // both non-empty), else keep existing labels, else fall back to defaults. A
+    // 16-term bracket has no conferences, so drop any stale labels left from a
+    // prior 32-term round.
     if game.is_conferences() {
-        if game.conferences.len() != 2 {
+        let provided = conferences
+            .map(|c| {
+                c.into_iter()
+                    .map(|s| s.trim().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|c| c.len() == 2 && c.iter().all(|s| !s.is_empty()));
+        if let Some(names) = provided {
+            game.set_conferences(names);
+        } else if game.conferences.len() != 2 {
             game.set_conferences(vec!["Conference A".into(), "Conference B".into()]);
         }
     } else if !game.conferences.is_empty() {
