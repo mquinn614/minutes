@@ -588,7 +588,6 @@ impl TrayActivity {
             Self::Live => "Stop Live Transcript",
         }
     }
-
 }
 
 /// Snapshot of the lifecycle flags used to derive `TrayActivity`. Capturing
@@ -669,7 +668,6 @@ fn apply_tray_activity(app: &tauri::AppHandle, activity: TrayActivity) {
             );
         }
     }
-
 }
 
 /// Re-sync the tray (icon, tooltip, menu enabled/labels) from the current
