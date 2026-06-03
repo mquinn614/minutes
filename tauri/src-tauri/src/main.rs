@@ -23,7 +23,6 @@ mod commands;
 mod context;
 mod palette_dispatch;
 mod secret_store;
-mod shortcut_manager;
 mod text_insertion;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
@@ -1381,57 +1380,6 @@ fn main() {
                     use tauri::Manager;
                     let shortcut_id = shortcut.id();
 
-                    // Try the new unified shortcut manager first.
-                    // IMPORTANT: Extract the action under the lock, then execute
-                    // AFTER dropping it to avoid deadlock.
-                    type UnifiedResult = Option<(
-                        shortcut_manager::ShortcutSlot,
-                        Option<shortcut_manager::StateMachineAction>,
-                        Option<(shortcut_manager::ShortcutSlot, u64)>,
-                    )>;
-                    let unified_result: UnifiedResult = {
-                        if let Some(mgr_state) =
-                            app.try_state::<Arc<Mutex<shortcut_manager::ShortcutManager>>>()
-                        {
-                            if let Ok(mut mgr) = mgr_state.lock() {
-                                if let Some(slot) = mgr.find_slot_for_shortcut_id(shortcut_id) {
-                                    match event.state() {
-                                        tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-                                            let hold_info = mgr.handle_press(slot);
-                                            Some((slot, None, hold_info))
-                                        }
-                                        tauri_plugin_global_shortcut::ShortcutState::Released => {
-                                            let session_active =
-                                                shortcut_manager::is_slot_session_active_fast(
-                                                    app, slot,
-                                                );
-                                            let (_s, action) =
-                                                mgr.handle_release(slot, session_active);
-                                            Some((slot, Some(action), None))
-                                        }
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }; // lock dropped here
-
-                    if let Some((slot, action, hold_info)) = unified_result {
-                        if let Some(action) = action {
-                            shortcut_manager::execute_action(app, slot, action);
-                        }
-                        if let Some((slot, generation)) = hold_info {
-                            shortcut_manager::schedule_hold_check(app, slot, generation);
-                        }
-                        return;
-                    }
-
-                    // Fall through to legacy handlers for shortcuts registered by old code
                     let state = app.state::<commands::AppState>();
                     let dictation_shortcut_value = state
                         .dictation_shortcut
@@ -1545,9 +1493,6 @@ fn main() {
             call_end_countdown_active: call_end_countdown_active.clone(),
             call_end_countdown_terminal_state: call_end_countdown_terminal_state.clone(),
         })
-        .manage(Arc::new(Mutex::new(
-            shortcut_manager::ShortcutManager::new(),
-        )))
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
             let startup_config = minutes_core::config::Config::load();
@@ -1660,56 +1605,6 @@ fn main() {
                     activation_progress.clone(),
                     completion_notifications_enabled.clone(),
                 );
-            }
-
-            // Restore dictation shortcut via the unified ShortcutManager.
-            // This replaces the old dual-path (legacy hotkey + legacy standard shortcut).
-            {
-                let cfg = &startup_config;
-                let app_handle = app.handle().clone();
-                if cfg.dictation.hotkey_enabled || cfg.dictation.shortcut_enabled {
-                    let (shortcut, keycode) = if cfg.dictation.hotkey_enabled {
-                        let kc = cfg.dictation.hotkey_keycode;
-                        let label = if kc == 57 {
-                            "CapsLock"
-                        } else if kc == 63 {
-                            "fn"
-                        } else {
-                            "CapsLock"
-                        };
-                        (label.to_string(), kc)
-                    } else {
-                        (cfg.dictation.shortcut.clone(), -1i64)
-                    };
-                    let register_result = {
-                        let mgr_state =
-                            app_handle.state::<Arc<Mutex<shortcut_manager::ShortcutManager>>>();
-                        let mut mgr = match mgr_state.lock() {
-                            Ok(mgr) => mgr,
-                            Err(_) => {
-                                eprintln!("[shortcut_manager] mutex poisoned at startup");
-                                return Ok(());
-                            }
-                        };
-                        mgr.register(
-                            shortcut_manager::ShortcutSlot::Dictation,
-                            shortcut.clone(),
-                            keycode,
-                            &app_handle,
-                        )
-                    };
-                    match register_result {
-                        Ok(_) => {
-                            dictation_shortcut_enabled.store(true, Ordering::Relaxed);
-                            if let Ok(mut current) = dictation_shortcut.lock() {
-                                *current = shortcut;
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[shortcut_manager] startup restore dictation failed: {}", e);
-                        }
-                    }
-                }
             }
 
             // Restore live transcript shortcut from config
@@ -2297,10 +2192,6 @@ fn main() {
             commands::cmd_recent_dictations,
             commands::cmd_copy_dictation,
             commands::cmd_repaste_dictation,
-            commands::cmd_set_shortcut,
-            commands::cmd_shortcut_status,
-            commands::cmd_suspend_shortcut,
-            commands::cmd_probe_shortcut,
             commands::cmd_start_live_transcript,
             commands::cmd_stop_live_transcript,
             commands::cmd_live_transcript_status,
