@@ -11801,7 +11801,7 @@ pub fn cmd_madness_set_terms(
             terms.len()
         ));
     }
-    let game = match slug.and_then(|s| madness::load_game(&s).ok()) {
+    let mut game = match slug.and_then(|s| madness::load_game(&s).ok()) {
         Some(mut g) => {
             g.title = title.to_string();
             g.terms = terms;
@@ -11811,6 +11811,17 @@ pub fn cmd_madness_set_terms(
         }
         None => madness::BracketGame::new(title, None, terms).map_err(|e| e.to_string())?,
     };
+    // Keep conference labels consistent with the term count. A 32-term bracket
+    // is conferences mode: default the two wing names if none are set (the
+    // panel editor only collects term lines). A 16-term bracket has no
+    // conferences, so drop any stale labels left from a prior 32-term round.
+    if game.is_conferences() {
+        if game.conferences.len() != 2 {
+            game.set_conferences(vec!["Conference A".into(), "Conference B".into()]);
+        }
+    } else if !game.conferences.is_empty() {
+        game.set_conferences(Vec::new());
+    }
     madness::save_game(&game).map_err(|e| e.to_string())?;
     Ok(game)
 }
