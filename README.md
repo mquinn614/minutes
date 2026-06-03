@@ -31,11 +31,12 @@ Everything runs locally with [whisper.cpp](https://github.com/ggerganov/whisper.
 
 ### Windows (10/11, x64)
 
-Download and run one of:
-- `minutes-desktop-windows-x64-vulkan-setup.exe` — GPU-accelerated (Vulkan; works on NVIDIA / AMD / Intel) with automatic CPU fallback. Recommended.
-- `minutes-desktop-windows-x64-setup.exe` — CPU-only.
+Two forms of the same Vulkan build — GPU-accelerated (works on NVIDIA / AMD / Intel) with automatic CPU fallback on machines without a GPU:
 
-The installer is unsigned, so SmartScreen warns on first run (**More info → Run anyway**).
+- **`minutes-desktop-windows-x64-vulkan-no-install.exe`** — just double-click and play. No install, no admin rights, nothing left behind. Recommended.
+- `minutes-desktop-windows-x64-vulkan-setup.exe` — installer (adds a Start-menu shortcut + uninstaller), if you'd rather install it.
+
+Neither is code-signed, so SmartScreen warns on first run — click **More info → Run anyway**.
 
 > First launch downloads a small local speech model (one time). On Windows, Minutes Madness scores from the **microphone**; native system-audio capture is macOS-only today (on Windows, route system audio through a loopback input if you need it).
 
