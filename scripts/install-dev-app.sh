@@ -140,20 +140,11 @@ mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_APP"
 cp -rf "$BUILD_APP" "$INSTALL_APP"
 
-echo "=== Running native hotkey diagnostic from installed dev app ==="
-set +e
-./scripts/diagnose-desktop-hotkey.sh "$INSTALL_APP"
-DIAG_EXIT=$?
-set -e
-
 echo ""
 echo "Installed app: $INSTALL_APP"
 echo "Bundle id: com.useminutes.madness.dev"
 echo "Build features: $MINUTES_BUILD_FEATURES"
 echo "Signing mode: $SIGN_MODE"
-echo "Hotkey diagnostic exit code: $DIAG_EXIT"
-echo "  0 = CGEventTap started successfully"
-echo "  2 = Input Monitoring / macOS identity is still blocking the hotkey"
 echo ""
 echo "For TCC-sensitive testing, launch only this installed dev app."
 echo "Avoid the repo symlink (./Minutes.app), raw target bundles, or ad-hoc builds."

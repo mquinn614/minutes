@@ -11431,23 +11431,6 @@
       }
     });
 
-    currentWindow.listen('palette:artifact-created', async (event) => {
-      const draft = event.payload || {};
-      if (!draft.path || typeof draft.content !== 'string') {
-        scheduleMeetingsRefresh(0);
-        return;
-      }
-      const filename = draft.path.split(/[\\/]/).pop() || draft.path;
-      const shown = await showMdViewer(draft.path, filename, draft.content, {
-        mode: 'source',
-        editable: true,
-      });
-      if (shown && currentMeetingDetail && detailOverlay.classList.contains('active')) {
-        showDetailFeedback(`Created ${String(draft.templateKind || 'debrief-memo').replaceAll('-', ' ')} draft`, 'success');
-      }
-      scheduleMeetingsRefresh(0);
-    });
-
     // ── Listen for recall:expand events from Rust backend ──
     currentWindow.listen('recall:expand', (event) => {
       const { title, mode } = event.payload;

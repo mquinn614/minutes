@@ -358,81 +358,6 @@ fn install_macos_terminate_hook(app: &tauri::AppHandle) {
         }
     }
 }
-
-#[cfg(target_os = "macos")]
-fn maybe_run_hotkey_diagnostic() -> Option<i32> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if !args.iter().any(|arg| arg == "--diagnose-hotkey") {
-        return None;
-    }
-
-    let mut keycode = minutes_core::hotkey_macos::KEYCODE_CAPS_LOCK;
-    let mut output_path: Option<std::path::PathBuf> = None;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--diagnose-hotkey-keycode" {
-            if let Some(value) = iter.next() {
-                if let Ok(parsed) = value.parse::<i64>() {
-                    keycode = parsed;
-                }
-            }
-        } else if arg == "--diagnose-hotkey-output" {
-            if let Some(value) = iter.next() {
-                output_path = Some(std::path::PathBuf::from(value));
-            }
-        } else if let Some(value) = arg.strip_prefix("--diagnose-hotkey-keycode=") {
-            if let Ok(parsed) = value.parse::<i64>() {
-                keycode = parsed;
-            }
-        } else if let Some(value) = arg.strip_prefix("--diagnose-hotkey-output=") {
-            output_path = Some(std::path::PathBuf::from(value));
-        }
-    }
-
-    let probe = minutes_core::hotkey_macos::probe_hotkey_monitor(
-        keycode,
-        std::time::Duration::from_millis(1200),
-    );
-    let current_exe = std::env::current_exe()
-        .ok()
-        .map(|path| path.display().to_string());
-    let bundle_root = current_exe.as_ref().and_then(|path| {
-        path.strip_suffix("/Contents/MacOS/minutes-app")
-            .map(|root| root.to_string())
-    });
-
-    let payload = serde_json::json!({
-        "mode": "diagnose-hotkey",
-        "current_exe": current_exe,
-        "bundle_root": bundle_root,
-        "probe": probe,
-    });
-
-    match serde_json::to_string_pretty(&payload) {
-        Ok(json) => {
-            if let Some(path) = output_path {
-                if let Some(parent) = path.parent() {
-                    if let Err(error) = std::fs::create_dir_all(parent) {
-                        eprintln!("failed to create diagnostic output directory: {}", error);
-                        return Some(1);
-                    }
-                }
-                if let Err(error) = std::fs::write(&path, &json) {
-                    eprintln!("failed to write hotkey diagnostic: {}", error);
-                    return Some(1);
-                }
-            }
-            println!("{}", json);
-        }
-        Err(error) => {
-            eprintln!("failed to encode hotkey diagnostic: {}", error);
-            return Some(1);
-        }
-    }
-
-    Some(if probe.status == "active" { 0 } else { 2 })
-}
-
 fn maybe_run_process_queue_worker() -> Option<i32> {
     if !std::env::args()
         .skip(1)
@@ -664,13 +589,6 @@ impl TrayActivity {
         }
     }
 
-    fn palette_source(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Recording => "recording",
-            Self::Live => "live-transcript",
-        }
-    }
 }
 
 /// Snapshot of the lifecycle flags used to derive `TrayActivity`. Capturing
@@ -713,11 +631,8 @@ fn snapshot_tray_state(app: &tauri::AppHandle) -> TrayStateSnapshot {
 }
 
 /// Apply the tray rendering for `activity` against the last-known menu-bar
-/// appearance. `emit_palette_refresh` separates lifecycle transitions
-/// (which must wake the palette so its visible command list re-fetches)
-/// from appearance-only repaints (which would otherwise spam the palette
-/// with no-op refreshes — codex plan-review #4).
-fn apply_tray_activity(app: &tauri::AppHandle, activity: TrayActivity, emit_palette_refresh: bool) {
+/// appearance (icon, tooltip, and the record/stop menu-item enabled state).
+fn apply_tray_activity(app: &tauri::AppHandle, activity: TrayActivity) {
     let appearance = current_tray_appearance(app);
     if let Some(tray) = app.tray_by_id("minutes-tray") {
         if let Ok(icon) = tauri::image::Image::from_bytes(activity.icon_bytes(appearance)) {
@@ -755,38 +670,24 @@ fn apply_tray_activity(app: &tauri::AppHandle, activity: TrayActivity, emit_pale
         }
     }
 
-    if emit_palette_refresh {
-        // Notify the palette overlay that lifecycle state changed so it
-        // can re-fetch its visible command list. The source string lets
-        // the palette distinguish recording / live / dictation transitions.
-        let _ = app.emit(
-            "palette:refresh",
-            serde_json::json!({
-                "source": activity.palette_source(),
-                "active": activity.is_active(),
-            }),
-        );
-    }
 }
 
-/// Re-sync the tray (icon, tooltip, menu enabled/labels, palette refresh)
-/// from the current AppState lifecycle flags. Callers must mutate
-/// recording / live / dictation flags BEFORE invoking this — the function
-/// reads, it does not write.
+/// Re-sync the tray (icon, tooltip, menu enabled/labels) from the current
+/// AppState lifecycle flags. Callers must mutate recording / live flags
+/// BEFORE invoking this — the function reads, it does not write.
 pub fn sync_tray_state(app: &tauri::AppHandle) {
     let snapshot = snapshot_tray_state(app);
     let activity = derive_tray_activity(snapshot);
-    apply_tray_activity(app, activity, true);
+    apply_tray_activity(app, activity);
 }
 
-/// Re-paint the tray for an appearance change (system Light/Dark toggle)
-/// without re-emitting `palette:refresh`. The lifecycle activity is
-/// unchanged; only the icon variant differs. Called from the
-/// `WindowEvent::ThemeChanged` listener.
+/// Re-paint the tray for an appearance change (system Light/Dark toggle).
+/// The lifecycle activity is unchanged; only the icon variant differs.
+/// Called from the `WindowEvent::ThemeChanged` listener.
 pub fn sync_tray_appearance(app: &tauri::AppHandle) {
     let snapshot = snapshot_tray_state(app);
     let activity = derive_tray_activity(snapshot);
-    apply_tray_activity(app, activity, false);
+    apply_tray_activity(app, activity);
 }
 
 // ── Auto-updater ────────────────────────────────────────────
@@ -1198,11 +1099,6 @@ fn main() {
     // tracing on. If that filter is ever broadened, demote `whisper_rs` and
     // `ggml` to `warn` or the #163 flood returns.
     minutes_core::install_whisper_logging_hooks();
-
-    #[cfg(target_os = "macos")]
-    if let Some(code) = maybe_run_hotkey_diagnostic() {
-        std::process::exit(code);
-    }
 
     if let Some(code) = maybe_run_process_queue_worker() {
         // Worker subprocess exit: skip C++ static teardown on macOS.
@@ -1907,9 +1803,7 @@ fn main() {
                     if let Some(state) = app_handle.try_state::<TrayAppearanceState>() {
                         state.set(TrayAppearance::from_theme(*theme));
                     }
-                    // Re-paint the tray icon for the new appearance; do
-                    // NOT emit `palette:refresh` (codex plan-review #4 —
-                    // appearance changes are not lifecycle transitions).
+                    // Re-paint the tray icon for the new appearance only.
                     sync_tray_appearance(&app_handle);
                 }
                 _ => {}
@@ -2093,13 +1987,6 @@ mod tray_activity_tests {
         assert_eq!(TrayActivity::Idle.stop_label(), "Stop Recording");
         assert_eq!(TrayActivity::Recording.stop_label(), "Stop Recording");
         assert_eq!(TrayActivity::Live.stop_label(), "Stop Live Transcript");
-    }
-
-    #[test]
-    fn palette_source_per_activity() {
-        assert_eq!(TrayActivity::Idle.palette_source(), "idle");
-        assert_eq!(TrayActivity::Recording.palette_source(), "recording");
-        assert_eq!(TrayActivity::Live.palette_source(), "live-transcript");
     }
 
     #[test]
