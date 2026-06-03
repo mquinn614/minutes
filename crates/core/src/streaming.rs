@@ -63,6 +63,16 @@ pub fn stream_audio_level() -> u32 {
     STREAM_AUDIO_LEVEL.load(Ordering::Relaxed)
 }
 
+/// Publish the current streaming audio input level (0–100).
+///
+/// The microphone `AudioStream` callback sets this itself, but the macOS
+/// system-audio tap produces chunks through a different path. The live
+/// consumer calls this per chunk so `stream_audio_level()` (and the UI's
+/// no-audio nudge) reflects the active source regardless of which it is.
+pub fn set_stream_audio_level(level: u32) {
+    STREAM_AUDIO_LEVEL.store(level.min(100), Ordering::Relaxed);
+}
+
 // ──────────────────────────────────────────────────────────────
 // Mic mute — Minutes-local toggle that drops the user's microphone
 // from the recording while system audio keeps flowing. Only meaningful

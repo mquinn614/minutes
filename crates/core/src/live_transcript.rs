@@ -1027,6 +1027,11 @@ fn run_inner(
             }
         };
 
+        // Publish the input level for the UI (no-audio nudge, meters). The mic
+        // AudioStream sets this in its own callback, but the system-audio tap
+        // does not, so update it here so the level reflects either source.
+        crate::streaming::set_stream_audio_level(crate::live_capture::rms_to_level(chunk.rms));
+
         // Write raw audio to WAV
         writer.write_audio(&chunk.samples);
 

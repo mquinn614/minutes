@@ -1685,12 +1685,23 @@
       });
       const deviceRow = document.getElementById('audio-device-row');
       const hint = document.getElementById('audio-source-hint');
-      if (audioSource === 'system-audio') {
+      const sys = audioSource === 'system-audio';
+      if (sys) {
         deviceRow.style.display = 'none';
         hint.textContent = "What's playing through this computer — for a remote all-hands on Zoom/Meet.";
       } else {
         deviceRow.style.display = '';
         hint.textContent = 'A mic in the room — picks up people talking out loud.';
+      }
+      // Reflect the active source on the toolbar button (it sits right next to
+      // Start recording) so it's always obvious what a new recording will
+      // capture — the choice persists across launches.
+      const audioBtn = document.getElementById('audio-btn');
+      if (audioBtn) {
+        audioBtn.textContent = sys ? '🔊 Audio' : '🎙 Audio';
+        audioBtn.title = sys
+          ? 'Recording source: System audio (what plays through this computer). Click to change.'
+          : 'Recording source: Microphone. Click to change.';
       }
     }
 
@@ -1851,6 +1862,7 @@
       } catch (e) { /* ignore */ }
     }
 
+    applySourceUI(); // reflect the persisted source on the toolbar at startup
     loadCurrent()
       .then(syncRecordingState)
       .catch((e) => { document.getElementById('status').textContent = 'Error: ' + e; });
