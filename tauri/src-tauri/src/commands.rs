@@ -10,7 +10,7 @@ use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -37,11 +37,6 @@ pub struct AppState {
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
     pub discard_short_hotkey_capture: Arc<AtomicBool>,
     pub dictation_active: Arc<AtomicBool>,
-    pub dictation_stop_flag: Arc<AtomicBool>,
-    pub dictation_focus_guard: Arc<Mutex<Option<DictationFocusGuard>>>,
-    pub pending_dictation_target: Arc<Mutex<Option<PendingDictationTarget>>>,
-    pub dictation_shortcut_enabled: Arc<AtomicBool>,
-    pub dictation_shortcut: Arc<Mutex<String>>,
     pub live_transcript_active: Arc<AtomicBool>,
     pub live_transcript_stop_flag: Arc<AtomicBool>,
     pub live_shortcut_enabled: Arc<AtomicBool>,
@@ -79,18 +74,6 @@ pub struct AppState {
     pub call_end_countdown_terminal_state: Arc<AtomicU8>,
 }
 
-#[derive(Debug, Clone)]
-pub struct DictationFocusGuard {
-    target_context: Option<crate::text_insertion::ActiveTargetContext>,
-    main_window_hidden: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingDictationTarget {
-    captured_at: Instant,
-    target_context: Option<crate::text_insertion::ActiveTargetContext>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionRestartStatus {
@@ -120,56 +103,6 @@ struct PermissionRestartSnapshot {
     update_installing: bool,
     call_capture: bool,
     assistant_session: Option<String>,
-}
-
-fn dictation_focus_debug(
-    event: &str,
-    target_context: Option<&crate::text_insertion::ActiveTargetContext>,
-    main_window_hidden: Option<bool>,
-    note: Option<&str>,
-) {
-    let current_frontmost = if dictation_focus_frontmost_debug_enabled() {
-        crate::text_insertion::capture_active_target_context()
-    } else {
-        None
-    };
-    let payload = serde_json::json!({
-        "ts": chrono::Utc::now().to_rfc3339(),
-        "event": event,
-        "target": target_context.map(|context| serde_json::json!({
-            "appName": context.app_name.as_deref(),
-            "bundleId": context.bundle_id.as_deref(),
-            "platform": context.platform.as_str(),
-        })),
-        "currentFrontmost": current_frontmost.map(|context| serde_json::json!({
-            "appName": context.app_name.as_deref(),
-            "bundleId": context.bundle_id.as_deref(),
-            "platform": context.platform,
-        })),
-        "mainWindowHidden": main_window_hidden,
-        "note": note,
-    });
-
-    let path = Config::minutes_dir().join("dictation-focus-debug.jsonl");
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{payload}");
-    }
-}
-
-fn dictation_focus_frontmost_debug_enabled() -> bool {
-    std::env::var("MINUTES_DICTATION_FOCUS_FRONTMOST")
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        || Config::minutes_dir()
-            .join("dictation-focus-frontmost.enabled")
-            .exists()
 }
 
 fn permission_restart_safety_from_snapshot(
@@ -2082,11 +2015,6 @@ const LIVE_SHORTCUT_CHOICES: [(&str, &str); 3] = [
     ("CmdOrCtrl+Alt+L", "Cmd/Ctrl + Option/Alt + L"),
     ("CmdOrCtrl+Shift+T", "Cmd/Ctrl + Shift + T"),
 ];
-const DICTATION_SHORTCUT_CHOICES: [(&str, &str); 3] = [
-    ("CmdOrCtrl+Shift+Space", "Cmd/Ctrl + Shift + Space"),
-    ("CmdOrCtrl+Alt+Space", "Cmd/Ctrl + Option/Alt + Space"),
-    ("CmdOrCtrl+Shift+D", "Cmd/Ctrl + Shift + D"),
-];
 // Codex pass 3 + claude pass 3 P2: dropped `Cmd+Shift+P` from this
 // dropdown because it actively conflicts with VS Code's Command
 // Palette — offering it as a default-list choice would encourage
@@ -2180,10 +2108,6 @@ pub fn default_hotkey_shortcut() -> &'static str {
     HOTKEY_CHOICES[0].0
 }
 
-pub fn default_dictation_shortcut() -> &'static str {
-    DICTATION_SHORTCUT_CHOICES[0].0
-}
-
 pub fn default_palette_shortcut() -> &'static str {
     PALETTE_SHORTCUT_CHOICES[0].0
 }
@@ -2200,10 +2124,6 @@ fn shortcut_choices(choices: &[(&str, &str)]) -> Vec<HotkeyChoice> {
 
 fn hotkey_choices() -> Vec<HotkeyChoice> {
     shortcut_choices(&HOTKEY_CHOICES)
-}
-
-fn dictation_shortcut_choices() -> Vec<HotkeyChoice> {
-    shortcut_choices(&DICTATION_SHORTCUT_CHOICES)
 }
 
 fn palette_shortcut_choices() -> Vec<HotkeyChoice> {
@@ -2233,10 +2153,6 @@ fn validate_shortcut(shortcut: &str, choices: &[(&str, &str)]) -> Result<String,
 
 fn validate_hotkey_shortcut(shortcut: &str) -> Result<String, String> {
     validate_shortcut(shortcut, &HOTKEY_CHOICES)
-}
-
-fn validate_dictation_shortcut(shortcut: &str) -> Result<String, String> {
-    validate_shortcut(shortcut, &DICTATION_SHORTCUT_CHOICES)
 }
 
 fn validate_live_shortcut(shortcut: &str) -> Result<String, String> {
@@ -2271,20 +2187,6 @@ fn current_hotkey_settings(state: &AppState) -> HotkeySettings {
         enabled: state.global_hotkey_enabled.load(Ordering::Relaxed),
         shortcut,
         choices: hotkey_choices(),
-    }
-}
-
-fn current_dictation_shortcut_settings(state: &AppState) -> HotkeySettings {
-    let shortcut = state
-        .dictation_shortcut
-        .lock()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_else(|| default_dictation_shortcut().to_string());
-    HotkeySettings {
-        enabled: state.dictation_shortcut_enabled.load(Ordering::Relaxed),
-        shortcut,
-        choices: dictation_shortcut_choices(),
     }
 }
 
@@ -3471,13 +3373,6 @@ fn validate_recording_launch_state(state: &AppState) -> Result<(), String> {
     }
     if state.live_transcript_active.load(Ordering::Relaxed) {
         return Err("Live transcript in progress — stop it first".into());
-    }
-    // Check both the in-process atomic and the cross-process PID file,
-    // mirroring the live transcript path. `cmd_install_update` and the
-    // palette dispatcher already treat the dictation PID as authoritative
-    // for "another Minutes is dictating", so this gate stays consistent.
-    if state.dictation_active.load(Ordering::Relaxed) || dictation_pid_active() {
-        return Err("Dictation in progress — stop it first".into());
     }
     Ok(())
 }
@@ -5463,83 +5358,6 @@ pub fn handle_global_hotkey_event(
     }
 }
 
-pub fn handle_dictation_shortcut_event(
-    app: &tauri::AppHandle,
-    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
-) {
-    let state = app.state::<AppState>();
-    if !state.dictation_shortcut_enabled.load(Ordering::Relaxed) {
-        return;
-    }
-
-    if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
-        return;
-    }
-    capture_pending_dictation_target(app);
-
-    let shortcut = state
-        .dictation_shortcut
-        .lock()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_else(|| default_dictation_shortcut().to_string());
-    minutes_core::logging::append_log(&serde_json::json!({
-        "ts": chrono::Local::now().to_rfc3339(),
-        "level": "info",
-        "step": "dictation_shortcut_event",
-        "file": "",
-        "extra": {
-            "shortcut": shortcut,
-            "state": "pressed",
-        }
-    }))
-    .ok();
-
-    if state.dictation_active.load(Ordering::Relaxed) {
-        minutes_core::logging::append_log(&serde_json::json!({
-            "ts": chrono::Local::now().to_rfc3339(),
-            "level": "info",
-            "step": "dictation_shortcut_action",
-            "file": "",
-            "extra": {
-                "shortcut": shortcut,
-                "action": "stop",
-            }
-        }))
-        .ok();
-        state.dictation_stop_flag.store(true, Ordering::Relaxed);
-        return;
-    }
-
-    if let Err(error) = start_dictation_session(app, None) {
-        minutes_core::logging::append_log(&serde_json::json!({
-            "ts": chrono::Local::now().to_rfc3339(),
-            "level": "error",
-            "step": "dictation_shortcut_action",
-            "file": "",
-            "error": error,
-            "extra": {
-                "shortcut": shortcut,
-                "action": "start_failed",
-            }
-        }))
-        .ok();
-        show_user_notification(app, "Dictation", &error);
-    } else {
-        minutes_core::logging::append_log(&serde_json::json!({
-            "ts": chrono::Local::now().to_rfc3339(),
-            "level": "info",
-            "step": "dictation_shortcut_action",
-            "file": "",
-            "extra": {
-                "shortcut": shortcut,
-                "action": "start",
-            }
-        }))
-        .ok();
-    }
-}
-
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_start_recording(
@@ -6488,11 +6306,6 @@ pub fn cmd_global_hotkey_settings(state: tauri::State<AppState>) -> HotkeySettin
 }
 
 #[tauri::command]
-pub fn cmd_dictation_shortcut_settings(state: tauri::State<AppState>) -> HotkeySettings {
-    current_dictation_shortcut_settings(&state)
-}
-
-#[tauri::command]
 pub fn cmd_set_global_hotkey(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
@@ -6531,70 +6344,6 @@ pub fn cmd_set_global_hotkey(
     }
 
     Ok(current_hotkey_settings(&state))
-}
-
-#[tauri::command]
-pub fn cmd_set_dictation_shortcut(
-    app: tauri::AppHandle,
-    state: tauri::State<AppState>,
-    enabled: bool,
-    shortcut: String,
-) -> Result<HotkeySettings, String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-
-    let next_shortcut = validate_dictation_shortcut(&shortcut)?;
-    let previous = current_dictation_shortcut_settings(&state);
-    let manager = app.global_shortcut();
-    let quick_thought_shortcut = current_hotkey_settings(&state).shortcut;
-
-    if next_shortcut == quick_thought_shortcut {
-        return Err(format!(
-            "{} is already used by the quick-thought shortcut. Choose a different dictation shortcut.",
-            next_shortcut
-        ));
-    }
-
-    if previous.enabled {
-        manager
-            .unregister(previous.shortcut.as_str())
-            .map_err(|e| format!("Could not unregister {}: {}", previous.shortcut, e))?;
-    }
-
-    if enabled {
-        if let Err(e) = manager.register(next_shortcut.as_str()) {
-            if previous.enabled {
-                let _ = manager.register(previous.shortcut.as_str());
-            }
-            return Err(format!(
-                "Could not register {}. Another app may already be using it. ({})",
-                next_shortcut, e
-            ));
-        }
-    }
-
-    state
-        .dictation_shortcut_enabled
-        .store(enabled, Ordering::Relaxed);
-    if let Ok(mut current) = state.dictation_shortcut.lock() {
-        *current = next_shortcut.clone();
-    }
-
-    let mut config = Config::load();
-    config.dictation.shortcut_enabled = enabled;
-    config.dictation.shortcut = next_shortcut.clone();
-    config
-        .save()
-        .map_err(|e| format!("Failed to save config: {}", e))?;
-
-    // Preload model when user enables dictation for the first time
-    if enabled {
-        let preload_config = Config::load();
-        std::thread::spawn(move || {
-            minutes_core::dictation::preload_model(&preload_config).ok();
-        });
-    }
-
-    Ok(current_dictation_shortcut_settings(&state))
 }
 
 #[tauri::command]
@@ -7930,11 +7679,6 @@ mod tests {
             hotkey_runtime: Arc::new(Mutex::new(HotkeyRuntime::default())),
             discard_short_hotkey_capture: Arc::new(AtomicBool::new(false)),
             dictation_active: Arc::new(AtomicBool::new(false)),
-            dictation_stop_flag: Arc::new(AtomicBool::new(false)),
-            dictation_focus_guard: Arc::new(Mutex::new(None)),
-            pending_dictation_target: Arc::new(Mutex::new(None)),
-            dictation_shortcut_enabled: Arc::new(AtomicBool::new(false)),
-            dictation_shortcut: Arc::new(Mutex::new("CmdOrCtrl+Shift+Space".into())),
             live_transcript_active: Arc::new(AtomicBool::new(false)),
             live_transcript_stop_flag: Arc::new(AtomicBool::new(false)),
             live_shortcut_enabled: Arc::new(AtomicBool::new(false)),
@@ -10650,16 +10394,10 @@ mod tests {
         use std::collections::HashSet;
         let palette: HashSet<&str> = PALETTE_SHORTCUT_CHOICES.iter().map(|(v, _)| *v).collect();
         let hotkey: HashSet<&str> = HOTKEY_CHOICES.iter().map(|(v, _)| *v).collect();
-        let dictation: HashSet<&str> = DICTATION_SHORTCUT_CHOICES.iter().map(|(v, _)| *v).collect();
         for chord in &palette {
             assert!(
                 !hotkey.contains(chord),
                 "{} appears in both PALETTE_SHORTCUT_CHOICES and HOTKEY_CHOICES",
-                chord
-            );
-            assert!(
-                !dictation.contains(chord),
-                "{} appears in both PALETTE_SHORTCUT_CHOICES and DICTATION_SHORTCUT_CHOICES",
                 chord
             );
         }
@@ -10907,134 +10645,6 @@ mod tests {
 
 // ── Dictation commands ──────────────────────────────────────
 
-#[tauri::command]
-pub fn cmd_start_dictation(
-    app: tauri::AppHandle,
-    _state: tauri::State<AppState>,
-) -> Result<String, String> {
-    start_dictation_session(&app, None)
-}
-
-#[tauri::command]
-pub fn cmd_recent_dictations(
-    limit: Option<usize>,
-) -> Result<Vec<minutes_core::dictation_memory::DictationMemoryRecord>, String> {
-    minutes_core::dictation_memory::load_recent(limit.unwrap_or(6).clamp(1, 25))
-        .map_err(|error| format!("Could not load recent dictations: {error}"))
-}
-
-#[tauri::command]
-pub fn cmd_copy_dictation(
-    id: String,
-) -> Result<crate::text_insertion::TextInsertionResult, String> {
-    let record = minutes_core::dictation_memory::find_record(&id)
-        .map_err(|error| format!("Could not load dictation history: {error}"))?
-        .ok_or_else(|| "Dictation was not found in local history.".to_string())?;
-    Ok(crate::text_insertion::insert_text(
-        crate::text_insertion::TextInsertionRequest {
-            text: record.cleaned_text,
-            mode: crate::text_insertion::TextInsertionMode::CopyOnly,
-            restore_clipboard: false,
-            clipboard_snapshot: None,
-        },
-    ))
-}
-
-#[tauri::command]
-pub fn cmd_repaste_dictation(
-    id: String,
-) -> Result<crate::text_insertion::TextInsertionResult, String> {
-    let record = minutes_core::dictation_memory::find_record(&id)
-        .map_err(|error| format!("Could not load dictation history: {error}"))?
-        .ok_or_else(|| "Dictation was not found in local history.".to_string())?;
-    let config = Config::load();
-    let clipboard_snapshot = if config.dictation.auto_paste_restore {
-        crate::text_insertion::read_clipboard().ok()
-    } else {
-        None
-    };
-    Ok(crate::text_insertion::insert_text(
-        crate::text_insertion::TextInsertionRequest {
-            text: record.cleaned_text,
-            mode: crate::text_insertion::TextInsertionMode::BestEffortVerified,
-            restore_clipboard: config.dictation.auto_paste_restore,
-            clipboard_snapshot,
-        },
-    ))
-}
-
-#[tauri::command]
-pub fn cmd_stop_dictation(state: tauri::State<AppState>) -> Result<String, String> {
-    if state.dictation_active.load(Ordering::Relaxed) {
-        state.dictation_stop_flag.store(true, Ordering::Relaxed);
-        return Ok("Dictation stop requested".into());
-    }
-    if dictation_pid_active() {
-        return Err("Dictation is running in another Minutes process.".into());
-    }
-    Err("Dictation is not active".into())
-}
-
-fn show_dictation_overlay(app: &tauri::AppHandle) {
-    use tauri::WebviewUrl;
-
-    // Close existing overlay if any
-    if let Some(win) = app.get_webview_window("dictation-overlay") {
-        win.close().ok();
-    }
-
-    // Position: bottom-right HUD, anchored to the current monitor work area.
-    let width = 320.0;
-    let height = 88.0;
-    let inset_x = 16.0;
-    let inset_y = 16.0;
-
-    let monitor = app
-        .get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
-        .or_else(|| {
-            app.get_webview_window("main")
-                .and_then(|window| window.primary_monitor().ok().flatten())
-        });
-
-    let (x, y) = if let Some(monitor) = monitor {
-        let scale = monitor.scale_factor();
-        let work_area = monitor.work_area();
-        let work_x = work_area.position.x as f64 / scale;
-        let work_y = work_area.position.y as f64 / scale;
-        let work_width = work_area.size.width as f64 / scale;
-        let work_height = work_area.size.height as f64 / scale;
-        (
-            work_x + work_width - width - inset_x,
-            work_y + work_height - height - inset_y,
-        )
-    } else {
-        (1440.0 - width - inset_x, 900.0 - height - inset_y)
-    };
-
-    match tauri::WebviewWindowBuilder::new(
-        app,
-        "dictation-overlay",
-        WebviewUrl::App("dictation-overlay.html".into()),
-    )
-    .title("Dictation")
-    .inner_size(width, height)
-    .position(x, y)
-    .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .content_protected(Config::load().privacy.hide_from_screen_share)
-    .always_on_top(true)
-    .focused(false)
-    .skip_taskbar(true)
-    .build()
-    {
-        Ok(_) => eprintln!("[dictation] overlay shown"),
-        Err(e) => eprintln!("[dictation] overlay failed: {}", e),
-    }
-}
-
 // ── Live transcript commands ─────────────────────────────────
 
 /// RAII guard that resets the live_transcript_active flag on drop (even on
@@ -11166,47 +10776,6 @@ fn run_live_session(
     // returns and the guard sets `live_transcript_active` to false. Calling
     // sync_tray_state here would still see the flag as true and re-render
     // the menu in Live mode.
-}
-
-/// Try to acquire the live transcript state. Returns Err with a message on conflict.
-/// RAII guard that resets the dictation_active flag on drop (even on panic)
-/// and re-syncs the tray. Same shape as `LiveActiveGuard` — owning the
-/// `AppHandle` keeps the flag-flip-then-sync ordering correct in one place.
-struct DictationActiveGuard {
-    active: Arc<AtomicBool>,
-    app: tauri::AppHandle,
-}
-impl Drop for DictationActiveGuard {
-    fn drop(&mut self) {
-        self.active.store(false, Ordering::SeqCst);
-        crate::sync_tray_state(&self.app);
-    }
-}
-
-/// Try to acquire the dictation state. Mirrors `try_acquire_live`: gates
-/// against recording / live / dictation, uses `compare_exchange` to close
-/// the load→store TOCTOU window in the old code (`load` at the top of
-/// `start_dictation_session`, `store` after overlay setup), and rolls back
-/// the flag on subsequent failure cases.
-fn try_acquire_dictation(state: &AppState) -> Result<(), String> {
-    if recording_active(&state.recording) {
-        return Err("Recording in progress — stop recording before dictating".into());
-    }
-    if state.live_transcript_active.load(Ordering::Relaxed) {
-        return Err("Live transcript in progress — stop it before dictating".into());
-    }
-    if state
-        .dictation_active
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("Dictation is already in progress.".into());
-    }
-    if dictation_pid_active() {
-        state.dictation_active.store(false, Ordering::SeqCst);
-        return Err("Dictation is running in another Minutes process.".into());
-    }
-    Ok(())
 }
 
 fn try_acquire_live(state: &AppState) -> Result<(), String> {
@@ -11437,11 +11006,6 @@ pub fn cmd_palette_settings(state: tauri::State<AppState>) -> HotkeySettings {
 /// Codex pass 3 + claude pass 3 P2.
 fn ensure_no_palette_shortcut_collision(state: &AppState, candidate: &str) -> Result<(), String> {
     let in_use = [
-        (
-            "dictation",
-            state.dictation_shortcut_enabled.load(Ordering::Relaxed),
-            state.dictation_shortcut.lock().ok().map(|s| s.clone()),
-        ),
         (
             "live transcript",
             state.live_shortcut_enabled.load(Ordering::Relaxed),
@@ -11734,476 +11298,6 @@ fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool)
     for file_name in crate::context::ASSISTANT_INSTRUCTION_FILES {
         update_assistant_live_context_file(&workspace.join(file_name), live_active);
     }
-}
-
-pub(crate) fn dictation_pid_active() -> bool {
-    minutes_core::pid::check_pid_file(&minutes_core::pid::dictation_pid_path())
-        .ok()
-        .flatten()
-        .is_some()
-}
-
-fn dictation_record_engine_id(config: &Config) -> String {
-    match config.dictation.backend.as_str() {
-        "whisper" | "" => format!("whisper:{}", config.dictation.model),
-        backend => backend.to_string(),
-    }
-}
-
-fn dictation_record_engine_descriptor(config: &Config) -> Option<String> {
-    match config.dictation.backend.as_str() {
-        "whisper" | "" => Some(config.dictation.model.clone()),
-        backend => Some(backend.to_string()),
-    }
-}
-
-pub fn capture_pending_dictation_target(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<AppState>() else {
-        return;
-    };
-    let capture_start = Instant::now();
-    let target_context = crate::text_insertion::capture_active_target_context();
-    dictation_focus_debug(
-        "pending_target_captured",
-        target_context.as_ref(),
-        None,
-        Some(format!("capture_ms={}", capture_start.elapsed().as_millis()).as_str()),
-    );
-    let pending = PendingDictationTarget {
-        captured_at: Instant::now(),
-        target_context,
-    };
-    let store_result = state.pending_dictation_target.lock();
-    match store_result {
-        Ok(mut guard) => *guard = Some(pending),
-        Err(poisoned) => *poisoned.into_inner() = Some(pending),
-    }
-}
-
-fn take_pending_dictation_target(
-    state: &AppState,
-) -> Option<crate::text_insertion::ActiveTargetContext> {
-    const PENDING_TARGET_MAX_AGE: Duration = Duration::from_secs(5);
-    let pending = match state.pending_dictation_target.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(poisoned) => poisoned.into_inner().take(),
-    }?;
-
-    let age = pending.captured_at.elapsed();
-    if age <= PENDING_TARGET_MAX_AGE {
-        dictation_focus_debug(
-            "pending_target_used",
-            pending.target_context.as_ref(),
-            None,
-            Some(format!("age_ms={}", age.as_millis()).as_str()),
-        );
-        return pending.target_context;
-    }
-
-    dictation_focus_debug(
-        "pending_target_expired",
-        pending.target_context.as_ref(),
-        None,
-        Some(format!("age_ms={}", age.as_millis()).as_str()),
-    );
-    None
-}
-
-fn dictation_insertion_memory(
-    insertion: &crate::text_insertion::TextInsertionResult,
-) -> minutes_core::dictation_memory::DictationInsertionMemory {
-    minutes_core::dictation_memory::DictationInsertionMemory {
-        outcome: insertion.outcome.as_str().into(),
-        method: insertion.method.as_str().into(),
-        verified: insertion.verified,
-        clipboard_restored: insertion.clipboard_restored,
-        message: insertion.message.clone(),
-    }
-}
-
-fn dictation_target_context(
-    insertion: &crate::text_insertion::TextInsertionResult,
-) -> Option<minutes_core::dictation_memory::DictationTargetContext> {
-    insertion.target_context.as_ref().map(|context| {
-        minutes_core::dictation_memory::DictationTargetContext {
-            platform: context.platform.clone(),
-            app_name: context.app_name.clone(),
-        }
-    })
-}
-
-fn record_dictation_memory(
-    config: &Config,
-    result: &minutes_core::dictation::DictationResult,
-    insertion: &crate::text_insertion::TextInsertionResult,
-) {
-    let record = minutes_core::dictation_memory::DictationMemoryRecord::new(
-        minutes_core::dictation_memory::DictationMemoryInput {
-            raw_text: result.raw_text.clone(),
-            cleaned_text: result.text.clone(),
-            duration_secs: result.duration_secs,
-            engine_id: dictation_record_engine_id(config),
-            engine_descriptor_version: dictation_record_engine_descriptor(config),
-            vocabulary_mode: None,
-            vocabulary_used: Vec::new(),
-            destination: result.destination.clone(),
-            insertion: dictation_insertion_memory(insertion),
-            target_context: dictation_target_context(insertion),
-            file_path: result.file_path.clone(),
-            daily_note_appended: result.daily_note_appended,
-        },
-    );
-    if let Err(error) = minutes_core::dictation_memory::append_record(record) {
-        tracing::warn!(error = %error, "failed to persist dictation memory record");
-    }
-}
-
-fn restore_dictation_target_focus(
-    target_context: &Option<crate::text_insertion::ActiveTargetContext>,
-) {
-    let Some(context) = target_context else {
-        dictation_focus_debug(
-            "restore_target_focus_skipped",
-            None,
-            None,
-            Some("no captured target"),
-        );
-        return;
-    };
-    if let Err(error) = crate::text_insertion::restore_target_focus(context) {
-        tracing::debug!(error = %error, "could not restore focus to dictation target");
-        dictation_focus_debug(
-            "restore_target_focus_failed",
-            Some(context),
-            None,
-            Some(error.as_str()),
-        );
-        return;
-    }
-
-    // Give the window server a beat before clipboard paste automation or overlay
-    // dismissal; otherwise macOS can keep Minutes as the active app.
-    std::thread::sleep(Duration::from_millis(120));
-    dictation_focus_debug("restore_target_focus_ok", Some(context), None, None);
-}
-
-fn hide_main_window_for_external_dictation(
-    app: &tauri::AppHandle,
-    target_context: &Option<crate::text_insertion::ActiveTargetContext>,
-) -> bool {
-    let target_bundle_id = target_context
-        .as_ref()
-        .and_then(|context| context.bundle_id.as_deref());
-    if target_bundle_id == Some(app.config().identifier.as_str()) {
-        return false;
-    }
-
-    let Some(window) = app.get_webview_window("main") else {
-        return false;
-    };
-    if !window.is_visible().ok().unwrap_or(false) {
-        return false;
-    }
-    if window.is_focused().ok().unwrap_or(false) {
-        return false;
-    }
-
-    match window.hide() {
-        Ok(()) => {
-            dictation_focus_debug(
-                "main_window_hidden",
-                target_context.as_ref(),
-                Some(true),
-                None,
-            );
-            true
-        }
-        Err(error) => {
-            tracing::debug!(error = %error, "could not hide main window during dictation");
-            dictation_focus_debug(
-                "main_window_hide_failed",
-                target_context.as_ref(),
-                Some(false),
-                Some(error.to_string().as_str()),
-            );
-            false
-        }
-    }
-}
-
-fn finish_dictation_overlay_lifecycle(app: &tauri::AppHandle, guard: Option<DictationFocusGuard>) {
-    dictation_focus_debug(
-        "finish_overlay_lifecycle_start",
-        guard
-            .as_ref()
-            .and_then(|guard| guard.target_context.as_ref()),
-        guard.as_ref().map(|guard| guard.main_window_hidden),
-        None,
-    );
-    if let Some(window) = app.get_webview_window("dictation-overlay") {
-        if let Err(error) = window.close() {
-            tracing::debug!(error = %error, "could not close dictation overlay");
-            dictation_focus_debug(
-                "overlay_close_failed",
-                guard
-                    .as_ref()
-                    .and_then(|guard| guard.target_context.as_ref()),
-                guard.as_ref().map(|guard| guard.main_window_hidden),
-                Some(error.to_string().as_str()),
-            );
-        }
-    }
-
-    std::thread::sleep(Duration::from_millis(100));
-
-    let Some(guard) = guard else {
-        return;
-    };
-
-    if guard.main_window_hidden {
-        dictation_focus_debug(
-            "main_window_restore_deferred",
-            guard.target_context.as_ref(),
-            Some(true),
-            Some("left hidden to avoid activating Minutes after external dictation"),
-        );
-    }
-
-    restore_dictation_target_focus(&guard.target_context);
-    dictation_focus_debug(
-        "finish_overlay_lifecycle_done",
-        guard.target_context.as_ref(),
-        Some(guard.main_window_hidden),
-        None,
-    );
-}
-
-#[tauri::command]
-pub fn cmd_dismiss_dictation_overlay(
-    app: tauri::AppHandle,
-    state: tauri::State<AppState>,
-) -> Result<(), String> {
-    let guard = match state.dictation_focus_guard.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(poisoned) => poisoned.into_inner().take(),
-    };
-    finish_dictation_overlay_lifecycle(&app, guard);
-    Ok(())
-}
-
-fn start_dictation_session(
-    app: &tauri::AppHandle,
-    capture_style: Option<HotkeyCaptureStyle>,
-) -> Result<String, String> {
-    let state = app.state::<AppState>();
-
-    // Acquire BEFORE any side effects (overlay, focus capture, emits). The
-    // previous load→store gap could let two starts race past the load and
-    // both fall into overlay setup. `try_acquire_dictation` uses
-    // compare_exchange and also gates against recording / live transcript.
-    try_acquire_dictation(&state)?;
-    // From here on, any early exit must drop `tray_guard` so the flag
-    // resets and the tray re-syncs. The guard is moved into the spawned
-    // thread once we get there; if any panic happens between here and the
-    // spawn it'll drop on the local stack and clean up.
-    let tray_guard = DictationActiveGuard {
-        active: Arc::clone(&state.dictation_active),
-        app: app.clone(),
-    };
-
-    let dictation_target_context = take_pending_dictation_target(&state)
-        .or_else(crate::text_insertion::capture_active_target_context);
-    dictation_focus_debug(
-        "session_start_target_captured",
-        dictation_target_context.as_ref(),
-        None,
-        None,
-    );
-    let main_window_hidden =
-        hide_main_window_for_external_dictation(app, &dictation_target_context);
-    let focus_guard = DictationFocusGuard {
-        target_context: dictation_target_context.clone(),
-        main_window_hidden,
-    };
-    match state.dictation_focus_guard.lock() {
-        Ok(mut guard) => *guard = Some(focus_guard.clone()),
-        Err(poisoned) => *poisoned.into_inner() = Some(focus_guard.clone()),
-    }
-    show_dictation_overlay(app);
-    dictation_focus_debug(
-        "overlay_shown",
-        dictation_target_context.as_ref(),
-        Some(main_window_hidden),
-        None,
-    );
-    restore_dictation_target_focus(&dictation_target_context);
-    app.emit("dictation:state", "loading").ok();
-
-    state.dictation_stop_flag.store(false, Ordering::Relaxed);
-    // dictation_active is already true from try_acquire_dictation; sync the
-    // tray so the menu reflects the just-started session.
-    crate::sync_tray_state(app);
-
-    let _ = capture_style;
-
-    let app_clone = app.clone();
-    let stop_flag = Arc::clone(&state.dictation_stop_flag);
-    let final_output_emitted = Arc::new(AtomicBool::new(false));
-    let dictation_target_context_for_thread = dictation_target_context.clone();
-    std::thread::spawn(move || {
-        // Move the tray guard into the thread. When this closure exits
-        // (normal return, error, or panic) the guard drops, which stores
-        // `dictation_active = false` and re-syncs the tray (idle).
-        let _tray_guard = tray_guard;
-        let mut config = Config::load();
-        // Re-validate the pinned input device for mid-session
-        // disconnects (#189). In-memory only; startup-side persistence
-        // is in main.rs.
-        minutes_core::capture::auto_heal_missing_recording_device(&mut config);
-        let clipboard_snapshot =
-            if config.dictation.auto_paste && config.dictation.auto_paste_restore {
-                crate::text_insertion::read_clipboard().ok()
-            } else {
-                None
-            };
-        let app_for_events = app_clone.clone();
-        let app_for_results = app_clone.clone();
-        let config_for_results = config.clone();
-        let final_output_for_results = Arc::clone(&final_output_emitted);
-        let dictation_target_context_for_results = dictation_target_context_for_thread.clone();
-
-        let result = minutes_core::dictation::run(
-            stop_flag,
-            &config,
-            move |event| {
-                use minutes_core::dictation::DictationEvent;
-                let state_str = match &event {
-                    DictationEvent::Listening => "listening",
-                    DictationEvent::Accumulating => "accumulating",
-                    DictationEvent::Processing => "processing",
-                    DictationEvent::PartialText(_) => "partial",
-                    DictationEvent::SilenceCountdown { .. } => "",
-                    DictationEvent::Success => "success",
-                    DictationEvent::Error => "error",
-                    DictationEvent::Cancelled => "cancelled",
-                    DictationEvent::Yielded => "yielded",
-                };
-                if !state_str.is_empty() {
-                    app_for_events.emit("dictation:state", state_str).ok();
-                }
-
-                if let DictationEvent::PartialText(text) = &event {
-                    app_for_events.emit("dictation:partial", text.as_str()).ok();
-                }
-
-                if let DictationEvent::SilenceCountdown {
-                    total_ms,
-                    remaining_ms,
-                } = &event
-                {
-                    app_for_events
-                        .emit(
-                            "dictation:silence",
-                            serde_json::json!({
-                                "total_ms": total_ms,
-                                "remaining_ms": remaining_ms,
-                            }),
-                        )
-                        .ok();
-                }
-
-                if matches!(
-                    &event,
-                    DictationEvent::Accumulating | DictationEvent::PartialText(_)
-                ) {
-                    let level = minutes_core::streaming::stream_audio_level();
-                    app_for_events.emit("dictation:level", level).ok();
-                }
-            },
-            move |result| {
-                final_output_for_results.store(true, Ordering::Relaxed);
-                app_for_results.emit("dictation:result", &result.text).ok();
-                if config_for_results.dictation.auto_paste {
-                    app_for_results.emit("dictation:state", "inserting").ok();
-                    dictation_focus_debug(
-                        "before_insert_restore",
-                        dictation_target_context_for_results.as_ref(),
-                        None,
-                        None,
-                    );
-                    restore_dictation_target_focus(&dictation_target_context_for_results);
-                    let insertion = crate::text_insertion::insert_text(
-                        crate::text_insertion::TextInsertionRequest {
-                            text: result.text.clone(),
-                            mode: crate::text_insertion::TextInsertionMode::BestEffortVerified,
-                            restore_clipboard: config_for_results.dictation.auto_paste_restore,
-                            clipboard_snapshot: clipboard_snapshot.clone(),
-                        },
-                    );
-                    app_for_results.emit("dictation:insertion", &insertion).ok();
-                    app_for_results
-                        .emit("dictation:state", insertion.overlay_state())
-                        .ok();
-                    record_dictation_memory(&config_for_results, &result, &insertion);
-                } else {
-                    dictation_focus_debug(
-                        "before_copy_restore",
-                        dictation_target_context_for_results.as_ref(),
-                        None,
-                        None,
-                    );
-                    restore_dictation_target_focus(&dictation_target_context_for_results);
-                    let insertion = crate::text_insertion::insert_text(
-                        crate::text_insertion::TextInsertionRequest {
-                            text: result.text.clone(),
-                            mode: crate::text_insertion::TextInsertionMode::CopyOnly,
-                            restore_clipboard: false,
-                            clipboard_snapshot: None,
-                        },
-                    );
-                    app_for_results.emit("dictation:insertion", &insertion).ok();
-                    app_for_results
-                        .emit("dictation:state", insertion.overlay_state())
-                        .ok();
-                    record_dictation_memory(&config_for_results, &result, &insertion);
-                }
-            },
-        );
-
-        // dictation_active is flipped to false (and the tray re-syncs)
-        // when `_tray_guard` drops on closure exit. See `DictationActiveGuard`.
-        match result {
-            Ok(()) => {
-                // Session ended normally (silence timeout or yield).
-                // Dismiss overlay if it wasn't already dismissed by a terminal event.
-                if !final_output_emitted.load(Ordering::Relaxed) {
-                    app_clone.emit("dictation:state", "cancelled").ok();
-                    let guard = app_clone
-                        .state::<AppState>()
-                        .dictation_focus_guard
-                        .lock()
-                        .map(|mut guard| guard.take())
-                        .unwrap_or_else(|poisoned| poisoned.into_inner().take());
-                    if guard.is_some() {
-                        finish_dictation_overlay_lifecycle(&app_clone, guard);
-                    } else {
-                        dictation_focus_debug(
-                            "cancel_cleanup_already_consumed",
-                            None,
-                            None,
-                            Some("overlay dismiss command already handled cleanup"),
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("[dictation] error: {}", e);
-                app_clone.emit("dictation:state", "error").ok();
-            }
-        }
-    });
-
-    Ok("Dictation started".into())
 }
 
 #[tauri::command]

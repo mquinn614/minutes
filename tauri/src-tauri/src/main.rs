@@ -23,7 +23,6 @@ mod commands;
 mod context;
 mod palette_dispatch;
 mod secret_store;
-mod text_insertion;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
 const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/releases";
@@ -567,7 +566,6 @@ pub enum TrayActivity {
     Idle,
     Recording,
     Live,
-    Dictation,
 }
 
 /// Inferred macOS menu-bar appearance. Honestly a proxy: we read the app's
@@ -640,10 +638,10 @@ impl TrayActivity {
     fn icon_bytes(self, appearance: TrayAppearance) -> &'static [u8] {
         match (self, appearance) {
             (Self::Idle, _) => include_bytes!("../icons/icon-tray.png"),
-            (Self::Recording | Self::Dictation, TrayAppearance::Light) => {
+            (Self::Recording, TrayAppearance::Light) => {
                 include_bytes!("../icons/icon-recording.png")
             }
-            (Self::Recording | Self::Dictation, TrayAppearance::Dark) => {
+            (Self::Recording, TrayAppearance::Dark) => {
                 include_bytes!("../icons/icon-recording-dark.png")
             }
             (Self::Live, TrayAppearance::Light) => include_bytes!("../icons/icon-live.png"),
@@ -656,7 +654,6 @@ impl TrayActivity {
             Self::Idle => "Minutes",
             Self::Recording => "Minutes — Recording...",
             Self::Live => "Minutes — Live Transcribing...",
-            Self::Dictation => "Minutes — Dictating...",
         }
     }
 
@@ -666,7 +663,6 @@ impl TrayActivity {
             // the menu reads "Stop Recording" by default before any session.
             Self::Idle | Self::Recording => "Stop Recording",
             Self::Live => "Stop Live Transcript",
-            Self::Dictation => "Stop Dictation",
         }
     }
 
@@ -675,7 +671,6 @@ impl TrayActivity {
             Self::Idle => "idle",
             Self::Recording => "recording",
             Self::Live => "live-transcript",
-            Self::Dictation => "dictation",
         }
     }
 }
@@ -687,7 +682,6 @@ impl TrayActivity {
 pub struct TrayStateSnapshot {
     pub recording: bool,
     pub live: bool,
-    pub dictation: bool,
 }
 
 /// Derive the tray activity from a state snapshot. Pure function; tested in
@@ -700,8 +694,6 @@ pub fn derive_tray_activity(snapshot: TrayStateSnapshot) -> TrayActivity {
         TrayActivity::Recording
     } else if snapshot.live {
         TrayActivity::Live
-    } else if snapshot.dictation {
-        TrayActivity::Dictation
     } else {
         TrayActivity::Idle
     }
@@ -714,12 +706,10 @@ fn snapshot_tray_state(app: &tauri::AppHandle) -> TrayStateSnapshot {
             // tray showing Recording at app launch (codex plan-review catch).
             recording: commands::recording_active(&state.recording),
             live: state.live_transcript_active.load(Ordering::Relaxed),
-            dictation: state.dictation_active.load(Ordering::Relaxed),
         },
         None => TrayStateSnapshot {
             recording: false,
             live: false,
-            dictation: false,
         },
     }
 }
@@ -1292,14 +1282,9 @@ fn main() {
     let global_hotkey_enabled = Arc::new(AtomicBool::new(false));
     let global_hotkey_shortcut =
         Arc::new(Mutex::new(commands::default_hotkey_shortcut().to_string()));
-    let dictation_shortcut_enabled = Arc::new(AtomicBool::new(false));
-    let dictation_shortcut = Arc::new(Mutex::new(
-        startup_config_snapshot.dictation.shortcut.clone(),
-    ));
     let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
     let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
     let dictation_active = Arc::new(AtomicBool::new(false));
-    let dictation_stop_flag = Arc::new(AtomicBool::new(false));
     let live_transcript_active = Arc::new(AtomicBool::new(false));
     let live_transcript_stop_flag = Arc::new(AtomicBool::new(false));
     let screen_share_hidden = Arc::new(AtomicBool::new(
@@ -1381,18 +1366,6 @@ fn main() {
                     let shortcut_id = shortcut.id();
 
                     let state = app.state::<commands::AppState>();
-                    let dictation_shortcut_value = state
-                        .dictation_shortcut
-                        .lock()
-                        .ok()
-                        .map(|value| value.clone())
-                        .unwrap_or_else(|| commands::default_dictation_shortcut().to_string());
-                    let dictation_shortcut_id =
-                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
-                            dictation_shortcut_value.as_str(),
-                        )
-                        .ok()
-                        .map(|shortcut| shortcut.id());
                     let live_shortcut_value = state
                         .live_shortcut
                         .lock()
@@ -1418,9 +1391,7 @@ fn main() {
                         .ok()
                         .map(|shortcut| shortcut.id());
 
-                    if Some(shortcut_id) == dictation_shortcut_id {
-                        commands::handle_dictation_shortcut_event(app, event.state());
-                    } else if Some(shortcut_id) == live_shortcut_id {
+                    if Some(shortcut_id) == live_shortcut_id {
                         commands::handle_live_shortcut_event(app, event.state());
                     } else if Some(shortcut_id) == palette_shortcut_id {
                         commands::handle_palette_shortcut_event(app, event.state());
@@ -1441,7 +1412,6 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_filename("window-state.json")
-                .skip_initial_state("dictation-overlay")
                 .build(),
         )
         .manage(commands::AppState {
@@ -1457,14 +1427,9 @@ fn main() {
             screen_share_hidden: screen_share_hidden.clone(),
             global_hotkey_enabled: global_hotkey_enabled.clone(),
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
-            dictation_shortcut_enabled: dictation_shortcut_enabled.clone(),
-            dictation_shortcut: dictation_shortcut.clone(),
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
             dictation_active: dictation_active.clone(),
-            dictation_stop_flag: dictation_stop_flag.clone(),
-            dictation_focus_guard: Arc::new(Mutex::new(None)),
-            pending_dictation_target: Arc::new(Mutex::new(None)),
             live_transcript_active: live_transcript_active.clone(),
             live_transcript_stop_flag: live_transcript_stop_flag.clone(),
             live_shortcut_enabled: {
@@ -1563,19 +1528,6 @@ fn main() {
                             std::thread::sleep(std::time::Duration::from_secs(DEFERRED_POLL_SECS));
                             commands::surface_deferred_update(&update_handle);
                         }
-                    }
-                });
-            }
-
-            // Preload whisper model for dictation in background thread.
-            // Only if dictation shortcuts are enabled — avoids 150MB RAM for
-            // users who never use dictation.
-            if startup_config.dictation.shortcut_enabled || startup_config.dictation.hotkey_enabled
-            {
-                let preload_config = startup_config.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = minutes_core::dictation::preload_model(&preload_config) {
-                        eprintln!("[dictation] model preload failed (non-fatal): {}", e);
                     }
                 });
             }
@@ -1864,15 +1816,11 @@ fn main() {
                             let state = app.state::<commands::AppState>();
                             let recording_was_active = commands::recording_active(&recording);
                             let live_active = state.live_transcript_active.load(Ordering::Relaxed);
-                            let dictation_was_active =
-                                state.dictation_active.load(Ordering::Relaxed);
 
                             let stop_ok = if recording_was_active {
                                 commands::request_stop(&recording, &stop).is_ok()
                             } else if live_active {
                                 commands::cmd_stop_live_transcript(state).is_ok()
-                            } else if dictation_was_active {
-                                commands::cmd_stop_dictation(state).is_ok()
                             } else {
                                 false
                             };
@@ -2151,8 +2099,6 @@ fn main() {
             commands::cmd_set_completion_notifications,
             commands::cmd_global_hotkey_settings,
             commands::cmd_set_global_hotkey,
-            commands::cmd_dictation_shortcut_settings,
-            commands::cmd_set_dictation_shortcut,
             commands::cmd_desktop_capabilities,
             commands::cmd_permission_center,
             commands::cmd_macos_permission_rows,
@@ -2186,12 +2132,6 @@ fn main() {
             commands::cmd_vault_setup,
             commands::cmd_vault_unlink,
             commands::cmd_open_meeting_url,
-            commands::cmd_start_dictation,
-            commands::cmd_stop_dictation,
-            commands::cmd_dismiss_dictation_overlay,
-            commands::cmd_recent_dictations,
-            commands::cmd_copy_dictation,
-            commands::cmd_repaste_dictation,
             commands::cmd_start_live_transcript,
             commands::cmd_stop_live_transcript,
             commands::cmd_live_transcript_status,
@@ -2249,20 +2189,13 @@ fn main() {
 mod tray_activity_tests {
     use super::{derive_tray_activity, TrayActivity, TrayAppearance, TrayStateSnapshot};
 
-    fn snap(recording: bool, live: bool, dictation: bool) -> TrayStateSnapshot {
-        TrayStateSnapshot {
-            recording,
-            live,
-            dictation,
-        }
+    fn snap(recording: bool, live: bool) -> TrayStateSnapshot {
+        TrayStateSnapshot { recording, live }
     }
 
     #[test]
     fn idle_when_all_flags_false() {
-        assert_eq!(
-            derive_tray_activity(snap(false, false, false)),
-            TrayActivity::Idle
-        );
+        assert_eq!(derive_tray_activity(snap(false, false)), TrayActivity::Idle);
     }
 
     #[test]
@@ -2275,37 +2208,23 @@ mod tray_activity_tests {
         // from an external CLI PID independent of the in-app flags. In
         // any drift scenario the tray must render deterministically.
         assert_eq!(
-            derive_tray_activity(snap(true, true, true)),
+            derive_tray_activity(snap(true, true)),
             TrayActivity::Recording
         );
         assert_eq!(
-            derive_tray_activity(snap(true, false, true)),
+            derive_tray_activity(snap(true, false)),
             TrayActivity::Recording
         );
         assert_eq!(
-            derive_tray_activity(snap(true, true, false)),
+            derive_tray_activity(snap(true, true)),
             TrayActivity::Recording
         );
     }
 
     #[test]
     fn live_beats_dictation_when_recording_is_false() {
-        assert_eq!(
-            derive_tray_activity(snap(false, true, true)),
-            TrayActivity::Live
-        );
-        assert_eq!(
-            derive_tray_activity(snap(false, true, false)),
-            TrayActivity::Live
-        );
-    }
-
-    #[test]
-    fn dictation_when_only_dictation_set() {
-        assert_eq!(
-            derive_tray_activity(snap(false, false, true)),
-            TrayActivity::Dictation
-        );
+        assert_eq!(derive_tray_activity(snap(false, true)), TrayActivity::Live);
+        assert_eq!(derive_tray_activity(snap(false, true)), TrayActivity::Live);
     }
 
     #[test]
@@ -2313,7 +2232,6 @@ mod tray_activity_tests {
         assert!(!TrayActivity::Idle.is_active());
         assert!(TrayActivity::Recording.is_active());
         assert!(TrayActivity::Live.is_active());
-        assert!(TrayActivity::Dictation.is_active());
     }
 
     #[test]
@@ -2324,7 +2242,6 @@ mod tray_activity_tests {
         assert_eq!(TrayActivity::Idle.stop_label(), "Stop Recording");
         assert_eq!(TrayActivity::Recording.stop_label(), "Stop Recording");
         assert_eq!(TrayActivity::Live.stop_label(), "Stop Live Transcript");
-        assert_eq!(TrayActivity::Dictation.stop_label(), "Stop Dictation");
     }
 
     #[test]
@@ -2332,7 +2249,6 @@ mod tray_activity_tests {
         assert_eq!(TrayActivity::Idle.palette_source(), "idle");
         assert_eq!(TrayActivity::Recording.palette_source(), "recording");
         assert_eq!(TrayActivity::Live.palette_source(), "live-transcript");
-        assert_eq!(TrayActivity::Dictation.palette_source(), "dictation");
     }
 
     #[test]
@@ -2354,21 +2270,10 @@ mod tray_activity_tests {
         let live_dark = TrayActivity::Live.icon_bytes(TrayAppearance::Dark);
         assert_ne!(live_light, live_dark);
 
-        // Dictation reuses the recording asset (no dedicated dictation
-        // icon — out of scope for this commit). Same bytes per appearance
-        // as recording, distinct across appearance variants.
-        let dict_light = TrayActivity::Dictation.icon_bytes(TrayAppearance::Light);
-        let dict_dark = TrayActivity::Dictation.icon_bytes(TrayAppearance::Dark);
-        assert_eq!(dict_light, rec_light);
-        assert_eq!(dict_dark, rec_dark);
-        assert_ne!(dict_light, dict_dark);
-
         // All assets are valid PNGs (magic bytes 89 50 4E 47 0D 0A 1A 0A).
         // If a future asset substitution swaps in the wrong format this
         // catches it before runtime.
-        for bytes in [
-            idle_light, rec_light, rec_dark, live_light, live_dark, dict_light, dict_dark,
-        ] {
+        for bytes in [idle_light, rec_light, rec_dark, live_light, live_dark] {
             assert!(
                 bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
                 "tray icon asset is not a valid PNG"
