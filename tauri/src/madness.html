@@ -1738,14 +1738,18 @@
 
     function makeBracketCode(game) {
       const labels = [...game.terms].sort((a, b) => a.seed - b.seed).map((t) => t.label);
-      return 'MMB1:' + b64encode(JSON.stringify({ t: game.title, s: labels }));
+      const payload = { t: game.title, s: labels };
+      // Carry the conference labels for a 32-team bracket so picks.html renders
+      // the two-conference layout (and knows it's a 31-matchup bracket).
+      if (isConferences(game) && game.conferences && game.conferences.length === 2) payload.c = game.conferences;
+      return 'MMB1:' + b64encode(JSON.stringify(payload));
     }
 
     function parsePicksCode(code) {
       code = (code || '').trim();
       if (!code.startsWith('MMP1:')) throw new Error('That is not a picks code (should start with MMP1:).');
       const obj = JSON.parse(b64decode(code.slice(5)));
-      if (!obj.n || !Array.isArray(obj.p) || obj.p.length !== 15) throw new Error('Malformed picks code.');
+      if (!obj.n || !Array.isArray(obj.p) || (obj.p.length !== 15 && obj.p.length !== 31)) throw new Error('Malformed picks code.');
       return { name: String(obj.n), seeds: obj.p.map(Number) };
     }
 
