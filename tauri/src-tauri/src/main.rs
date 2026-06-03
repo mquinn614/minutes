@@ -540,7 +540,6 @@ pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &st
 /// to the main thread), so no extra wrapping is needed.
 pub struct TrayMenuHandles {
     pub record: tauri::menu::MenuItem<tauri::Wry>,
-    pub quick_thought: tauri::menu::MenuItem<tauri::Wry>,
     pub stop: tauri::menu::MenuItem<tauri::Wry>,
 }
 
@@ -746,10 +745,6 @@ fn apply_tray_activity(app: &tauri::AppHandle, activity: TrayActivity, emit_pale
     match app.try_state::<TrayMenuHandles>() {
         Some(handles) => {
             handles.record.set_enabled(!activity.is_active()).ok();
-            handles
-                .quick_thought
-                .set_enabled(!activity.is_active())
-                .ok();
             handles.stop.set_enabled(activity.is_active()).ok();
             handles.stop.set_text(activity.stop_label()).ok();
         }
@@ -1616,14 +1611,6 @@ fn main() {
                 None::<&str>,
             )?;
             let record_item_ref = record_item.clone();
-            let quick_thought_item = MenuItem::with_id(
-                app,
-                "quick-thought",
-                "Quick Thought",
-                !initial_recording,
-                None::<&str>,
-            )?;
-            let quick_thought_item_ref = quick_thought_item.clone();
             let stop_item = MenuItem::with_id(
                 app,
                 "stop",
@@ -1692,7 +1679,6 @@ fn main() {
                 &open_item,
                 &sep0,
                 &record_item,
-                &quick_thought_item,
                 &stop_item,
                 &mic_mute_item,
                 &sep,
@@ -1714,7 +1700,6 @@ fn main() {
                     let recording = recording_clone.clone();
                     let stop = stop_clone.clone();
                     let rec_item = record_item_ref.clone();
-                    let quick_item = quick_thought_item_ref.clone();
                     let stp_item = stop_item_ref.clone();
                     let screen_share_hidden = screen_share_hidden.clone();
                     let screen_share_item_ref = screen_share_item_ref.clone();
@@ -1771,36 +1756,6 @@ fn main() {
                                 ri.set_text("Start Recording").ok();
                             });
                         }
-                        "quick-thought" => {
-                            let app_state = app.state::<commands::AppState>();
-                            if commands::recording_active(&recording)
-                                || app_state.starting.load(Ordering::Relaxed)
-                            {
-                                return;
-                            }
-                            // Transitional text only; see "record" arm for full rationale.
-                            quick_item.set_text("Starting Quick Thought…").ok();
-                            let app_handle = app.clone();
-                            let ri = rec_item.clone();
-                            let qi = quick_item.clone();
-                            std::thread::spawn(move || {
-                                let app_for_launch = app_handle.clone();
-                                let state = app_handle.state::<commands::AppState>();
-                                let _ = commands::launch_recording(
-                                    app_for_launch,
-                                    &state,
-                                    minutes_core::CaptureMode::QuickThought,
-                                    Some(minutes_core::capture::RecordingIntent::Memo),
-                                    false,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                );
-                                ri.set_text("Start Recording").ok();
-                                qi.set_text("Quick Thought").ok();
-                            });
-                        }
                         "stop" => {
                             // The Stop menu item is enabled whenever ANY
                             // recording-class state is active: recording
@@ -1838,18 +1793,15 @@ fn main() {
                             // active session's RAII guard drops and triggers
                             // `sync_tray_state` (Live/DictationActiveGuard).
                             rec_item.set_text("Stopping...").ok();
-                            quick_item.set_text("Quick Thought").ok();
                             stp_item.set_enabled(false).ok();
                             let app_done = app.clone();
                             let ri = rec_item.clone();
-                            let qi = quick_item.clone();
                             std::thread::spawn(move || {
                                 if recording_was_active {
                                     if commands::wait_for_recording_shutdown(
                                         std::time::Duration::from_secs(120),
                                     ) {
                                         ri.set_text("Start Recording").ok();
-                                        qi.set_text("Quick Thought").ok();
                                         sync_tray_state(&app_done);
                                     }
                                 } else {
@@ -1865,7 +1817,6 @@ fn main() {
                                     // #1 generalized to all flag-based stop
                                     // paths).
                                     ri.set_text("Start Recording").ok();
-                                    qi.set_text("Quick Thought").ok();
                                 }
                             });
                         }
@@ -1954,7 +1905,6 @@ fn main() {
             // menu items are frozen in their construction-time enabled state.
             app.manage(TrayMenuHandles {
                 record: record_item.clone(),
-                quick_thought: quick_thought_item.clone(),
                 stop: stop_item.clone(),
             });
 
