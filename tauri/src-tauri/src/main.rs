@@ -1392,6 +1392,7 @@ fn main() {
             call_end_countdown_cancel: call_end_countdown_cancel.clone(),
             call_end_countdown_active: call_end_countdown_active.clone(),
             call_end_countdown_terminal_state: call_end_countdown_terminal_state.clone(),
+            audio_meter: Arc::new(Mutex::new(None)),
         })
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
@@ -1988,6 +1989,9 @@ fn main() {
             commands::cmd_start_live_transcript,
             commands::cmd_stop_live_transcript,
             commands::cmd_live_transcript_status,
+            commands::cmd_start_audio_meter,
+            commands::cmd_audio_meter_status,
+            commands::cmd_stop_audio_meter,
             commands::cmd_live_shortcut_settings,
             commands::cmd_set_live_shortcut,
             commands::cmd_install_update,

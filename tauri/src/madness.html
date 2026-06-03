@@ -135,6 +135,28 @@
     .modal hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     .modal .tm-pick { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
     .modal.wide { max-width: 560px; }
+    /* Source toggle (mic vs system audio) */
+    .source-toggle {
+      display: flex; gap: 6px; background: var(--bg-hover);
+      border: 1px solid var(--border-mid); border-radius: 10px; padding: 4px; margin-bottom: 8px;
+    }
+    .source-toggle .src-opt {
+      flex: 1; background: transparent; border: none; border-radius: 7px;
+      padding: 8px 10px; font-size: 12px; color: var(--text-secondary); cursor: pointer;
+    }
+    .source-toggle .src-opt:hover { background: var(--bg-elevated); }
+    .source-toggle .src-opt.active { background: var(--accent); color: #fff; }
+    @media (prefers-color-scheme: dark) { .source-toggle .src-opt.active { color: #0D0D0B; } }
+    /* Pre-record input level meter */
+    .level-meter {
+      height: 12px; background: var(--bg-hover); border: 1px solid var(--border-mid);
+      border-radius: 7px; overflow: hidden; margin-bottom: 6px;
+    }
+    .level-meter-fill {
+      height: 100%; width: 0%; background: var(--accent);
+      border-radius: 7px; transition: width 80ms linear;
+    }
+    .level-meter-fill.clip { background: var(--red); }
     #bw-title {
       width: 100%; box-sizing: border-box;
       background: var(--bg-hover); color: var(--text);
@@ -418,14 +440,27 @@
   <div class="modal-backdrop" id="audio-modal">
     <div class="modal wide">
       <h3>Audio</h3>
-      <p>Choose the input device Madness records from: your microphone, or a
-        room/conference mic that picks up the speakers in the room.</p>
+      <p>Pick what Madness listens to, then watch the meter to confirm it's
+        hearing sound before you start the game.</p>
       <div class="step">
+        <p><b>Source</b></p>
+        <div class="source-toggle" id="audio-source-toggle">
+          <button type="button" class="src-opt active" data-source="microphone">🎙 Microphone</button>
+          <button type="button" class="src-opt" data-source="system-audio">🔊 System audio</button>
+        </div>
+        <div class="diag" id="audio-source-hint">A mic in the room — picks up people talking out loud.</div>
+      </div>
+      <div class="step" id="audio-device-row">
         <p><b>Input device</b></p>
         <select id="audio-device-picker" class="settings-field" style="width:100%">
           <option value="">System default</option>
         </select>
         <div class="diag" id="audio-device-msg"></div>
+      </div>
+      <div class="step">
+        <p><b>Input level</b></p>
+        <div class="level-meter"><div class="level-meter-fill" id="audio-level-fill"></div></div>
+        <div class="diag" id="audio-level-hint">Listening… speak or play audio to test.</div>
       </div>
       <div class="actions"><a id="audio-close">Close</a></div>
     </div>
@@ -509,6 +544,7 @@
       };
     }
     let mockLiveStart = 0;
+    let mockMeterStart = 0;
     function mockInvoke(cmd) {
       switch (cmd) {
         case 'cmd_madness_list':
@@ -527,6 +563,13 @@
             escalate_to_tiny: false, cached: false,
           };
         case 'cmd_stop_live_transcript': mockLiveStart = 0; return null;
+        case 'cmd_start_audio_meter': mockMeterStart = Date.now(); return { active: true, source: 'microphone', device: 'Mock Microphone' };
+        case 'cmd_audio_meter_status':
+          // Oscillate a fake level so the meter visibly animates in preview.
+          return mockMeterStart > 0
+            ? { active: true, level: Math.round(45 + 40 * Math.abs(Math.sin((Date.now() - mockMeterStart) / 400))), error: false, device: 'Mock Microphone' }
+            : { active: false, level: 0, error: false };
+        case 'cmd_stop_audio_meter': mockMeterStart = 0; return null;
         case 'cmd_needs_setup': return { hasModel: true, standalone_live: { ready: true } };
         case 'cmd_download_model': return 'ok';
         case 'cmd_open_file': return null;
@@ -1264,6 +1307,9 @@
 
     async function startRecording() {
       if (!current) return;
+      // Release the pre-record meter first so it isn't holding the mic/tap when
+      // the recording capture opens the same source.
+      await stopAudioMeter();
       // Pre-flight: live transcription uses its OWN speech model (base by
       // default) — separate from the batch model the core recorder uses. On a
       // fresh machine the live model can be missing while batch recording works,
@@ -1625,14 +1671,99 @@
       }
     }
 
+    // ── Pre-record source toggle + input level meter ──────────────
+    // `audioSource` ('microphone' | 'system-audio') drives BOTH the meter and
+    // (slice 1.5b) the recording capture path. Persisted so the host's choice
+    // sticks across launches.
+    let audioSource = localStorage.getItem('mm_audio_source') || 'microphone';
+    let meterTimer = null;
+
+    function applySourceUI() {
+      document.querySelectorAll('#audio-source-toggle .src-opt').forEach(b => {
+        b.classList.toggle('active', b.dataset.source === audioSource);
+      });
+      const deviceRow = document.getElementById('audio-device-row');
+      const hint = document.getElementById('audio-source-hint');
+      if (audioSource === 'system-audio') {
+        deviceRow.style.display = 'none';
+        hint.textContent = "What's playing through this computer — for a remote all-hands on Zoom/Meet.";
+      } else {
+        deviceRow.style.display = '';
+        hint.textContent = 'A mic in the room — picks up people talking out loud.';
+      }
+    }
+
+    function setMeter(level, clip) {
+      const fill = document.getElementById('audio-level-fill');
+      fill.style.width = Math.max(0, Math.min(100, level)) + '%';
+      fill.classList.toggle('clip', !!clip);
+    }
+
+    function stopMeterPolling() {
+      if (meterTimer) { clearInterval(meterTimer); meterTimer = null; }
+    }
+
+    async function pollMeter() {
+      try {
+        const s = await invoke('cmd_audio_meter_status');
+        if (!s || !s.active) { setMeter(0, false); return; }
+        const lvl = s.level || 0;
+        setMeter(lvl, lvl >= 95);
+        if (s.error) {
+          const hintEl = document.getElementById('audio-level-hint');
+          hintEl.style.color = 'var(--red)';
+          hintEl.textContent = 'Audio source error — try reselecting the source.';
+        }
+      } catch (e) { /* transient; keep polling */ }
+    }
+
+    async function startAudioMeter() {
+      stopMeterPolling();
+      const hintEl = document.getElementById('audio-level-hint');
+      try {
+        const device = document.getElementById('audio-device-picker').value || null;
+        await invoke('cmd_start_audio_meter', { source: audioSource, device });
+        hintEl.style.color = 'var(--text-secondary)';
+        hintEl.textContent = audioSource === 'system-audio'
+          ? 'Listening to system audio — play something to test.'
+          : 'Listening… speak to test the mic.';
+        meterTimer = setInterval(pollMeter, 100);
+      } catch (e) {
+        setMeter(0, false);
+        hintEl.style.color = 'var(--red)';
+        hintEl.textContent = audioSource === 'system-audio'
+          ? 'Could not capture system audio: ' + e
+          : 'Could not open the mic: ' + e;
+      }
+    }
+
+    async function stopAudioMeter() {
+      stopMeterPolling();
+      setMeter(0, false);
+      try { await invoke('cmd_stop_audio_meter'); } catch (e) { /* may already be stopped */ }
+    }
+
+    document.querySelectorAll('#audio-source-toggle .src-opt').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (audioSource === b.dataset.source) return;
+        audioSource = b.dataset.source;
+        localStorage.setItem('mm_audio_source', audioSource);
+        applySourceUI();
+        await startAudioMeter();
+      });
+    });
+
     function openAudioModal() {
+      applySourceUI();
       loadAudioDevices();
       document.getElementById('audio-modal').classList.add('show');
+      startAudioMeter();
     }
 
     document.getElementById('audio-btn').addEventListener('click', openAudioModal);
     document.getElementById('audio-close').addEventListener('click', () => {
       document.getElementById('audio-modal').classList.remove('show');
+      stopAudioMeter();
     });
     document.getElementById('audio-device-picker').addEventListener('change', async (e) => {
       const msg = document.getElementById('audio-device-msg');
@@ -1641,6 +1772,7 @@
         await invoke('cmd_set_setting', { section: 'recording', key: 'device', value: e.target.value || '' });
         msg.style.color = 'var(--text-secondary)';
         msg.textContent = e.target.value ? ('Recording from: ' + label) : 'Using system default input.';
+        if (audioSource === 'microphone') await startAudioMeter(); // re-point the meter at the new device
       } catch (err) {
         msg.style.color = 'var(--accent)';
         msg.textContent = 'Could not save device: ' + err;

@@ -48,6 +48,10 @@ pub mod watch;
 // Streaming audio API (for Prompter and other real-time consumers)
 #[cfg(feature = "streaming")]
 pub mod streaming;
+// Unified live capture source (microphone | native system-audio tap) + the
+// pre-record input level meter that drives the Minutes Madness source picker.
+#[cfg(feature = "streaming")]
+pub mod live_capture;
 #[cfg(feature = "streaming")]
 pub mod vad;
 

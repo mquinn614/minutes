@@ -60,6 +60,11 @@ pub struct AppState {
     /// from the cancel bit so the detector can tell an explicit user cancel
     /// from an internal reset or teardown path.
     pub call_end_countdown_terminal_state: Arc<AtomicU8>,
+    /// Active pre-record input level meter (Minutes Madness source picker).
+    /// `Some` while the host is checking levels before starting a game;
+    /// replaced/cleared by `cmd_start_audio_meter` / `cmd_stop_audio_meter`.
+    /// Dropping the `LevelMeter` stops capture and joins its thread.
+    pub audio_meter: Arc<Mutex<Option<minutes_core::live_capture::LevelMeter>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -7617,6 +7622,7 @@ mod tests {
             call_end_countdown_cancel: Arc::new(AtomicBool::new(false)),
             call_end_countdown_active: Arc::new(AtomicBool::new(false)),
             call_end_countdown_terminal_state: Arc::new(AtomicU8::new(0)),
+            audio_meter: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -10647,6 +10653,73 @@ fn try_acquire_live(state: &AppState) -> Result<(), String> {
         return Err("Dictation in progress — stop dictation first".into());
     }
     Ok(())
+}
+
+/// Start a pre-record input level meter so the Minutes Madness host can confirm
+/// the selected source is picking up sound before starting a game.
+///
+/// `source` is `"microphone"` / `"mic"` or `"system"` / `"system-audio"`. For
+/// the microphone, `device` optionally pins a specific input device; when
+/// omitted it falls back to the configured recording device, then the system
+/// default. Replaces any meter already running. Returns the resolved source +
+/// device/route label, or an error string if the device/tap can't be opened
+/// (e.g. system-audio permission not yet granted).
+#[tauri::command]
+pub fn cmd_start_audio_meter(
+    state: tauri::State<AppState>,
+    source: String,
+    device: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use minutes_core::live_capture::{LevelMeter, LiveAudioSource};
+
+    // Stop any existing meter first (and join it outside the lock) so we never
+    // double-open the same device.
+    let previous = state.audio_meter.lock().ok().and_then(|mut g| g.take());
+    drop(previous);
+
+    let device = device.or_else(|| Config::load().recording.device.clone());
+    let live_source = LiveAudioSource::parse(&source, device);
+    let resolved = live_source.as_str();
+
+    let meter = LevelMeter::start(&live_source).map_err(|e| e.to_string())?;
+    let label = meter.device_label().to_string();
+
+    let mut guard = state.audio_meter.lock().map_err(|e| e.to_string())?;
+    *guard = Some(meter);
+
+    Ok(serde_json::json!({
+        "active": true,
+        "source": resolved,
+        "device": label,
+    }))
+}
+
+/// Current pre-record meter reading. Returns `{ active, level (0–100), error,
+/// device }`. `active` is false when no meter is running.
+#[tauri::command]
+pub fn cmd_audio_meter_status(state: tauri::State<AppState>) -> serde_json::Value {
+    let guard = match state.audio_meter.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match guard.as_ref() {
+        Some(meter) => serde_json::json!({
+            "active": true,
+            "level": meter.level(),
+            "error": meter.has_error(),
+            "device": meter.device_label(),
+        }),
+        None => serde_json::json!({ "active": false, "level": 0, "error": false }),
+    }
+}
+
+/// Stop and tear down the pre-record level meter (no-op if none is running).
+#[tauri::command]
+pub fn cmd_stop_audio_meter(state: tauri::State<AppState>) {
+    // Take the meter out under the lock, then drop it (joining its thread)
+    // after the lock is released.
+    let previous = state.audio_meter.lock().ok().and_then(|mut g| g.take());
+    drop(previous);
 }
 
 #[tauri::command]
