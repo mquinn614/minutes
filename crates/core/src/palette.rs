@@ -89,10 +89,6 @@ pub enum ActionId {
     StopLiveTranscript,
     ReadLiveTranscript,
 
-    // Dictation
-    StartDictation,
-    StopDictation,
-
     // Navigation
     OpenLatestMeeting,
     OpenLatestMeetingFromToday,
@@ -142,8 +138,6 @@ impl ActionId {
             ActionId::StartLiveTranscript => "start-live-transcript",
             ActionId::StopLiveTranscript => "stop-live-transcript",
             ActionId::ReadLiveTranscript => "read-live-transcript",
-            ActionId::StartDictation => "start-dictation",
-            ActionId::StopDictation => "stop-dictation",
             ActionId::OpenLatestMeeting => "open-latest-meeting",
             ActionId::OpenLatestMeetingFromToday => "open-latest-meeting-from-today",
             ActionId::OpenMeetingsFolder => "open-meetings-folder",
@@ -184,7 +178,6 @@ pub enum InputKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Recording,
-    Dictation,
     Navigation,
     Search,
     Meeting,
@@ -231,14 +224,6 @@ impl Visibility {
     pub const fn when_live_transcript() -> Self {
         Self {
             requires: StateFlags::LIVE_TRANSCRIPT,
-            forbids: StateFlags::empty(),
-        }
-    }
-
-    /// Shorthand: only visible during a dictation session.
-    pub const fn when_dictation() -> Self {
-        Self {
-            requires: StateFlags::DICTATION,
             forbids: StateFlags::empty(),
         }
     }
@@ -401,25 +386,6 @@ pub fn commands() -> Vec<Command> {
             keywords: &["read", "view", "show", "live"],
             section: Section::Recording,
             visibility: Visibility::when_live_transcript(),
-            input: InputKind::None,
-        },
-        // ── Dictation ────────────────────────────────────────────────
-        Command {
-            id: ActionId::StartDictation,
-            title: "Start dictation",
-            description: "Speak → clipboard + daily note",
-            keywords: &["dictate", "speech", "voice", "type"],
-            section: Section::Dictation,
-            visibility: Visibility::when_idle(),
-            input: InputKind::None,
-        },
-        Command {
-            id: ActionId::StopDictation,
-            title: "Stop dictation",
-            description: "End the dictation session",
-            keywords: &["stop", "end", "dictate"],
-            section: Section::Dictation,
-            visibility: Visibility::when_dictation(),
             input: InputKind::None,
         },
         // ── Navigation ───────────────────────────────────────────────
@@ -1170,8 +1136,8 @@ mod tests {
         // dropping the count from 22 to 21.
         assert_eq!(
             all.len(),
-            21,
-            "registry should have exactly 21 commands with backing dispatchers"
+            19,
+            "registry should have exactly 19 commands with backing dispatchers"
         );
     }
 
@@ -1362,10 +1328,8 @@ mod tests {
         let visible = visible_commands(&idle_ctx());
         let ids = kebabs(&visible);
         assert!(ids.contains(&"start-recording"));
-        assert!(ids.contains(&"start-dictation"));
         assert!(ids.contains(&"start-live-transcript"));
         assert!(!ids.contains(&"stop-recording"));
-        assert!(!ids.contains(&"stop-dictation"));
         assert!(!ids.contains(&"stop-live-transcript"));
         assert!(!ids.contains(&"add-note"));
     }
@@ -1377,8 +1341,6 @@ mod tests {
         assert!(!ids.contains(&"start-recording"));
         assert!(ids.contains(&"stop-recording"));
         assert!(ids.contains(&"add-note"));
-        // Start-dictation is forbidden while any session is active.
-        assert!(!ids.contains(&"start-dictation"));
     }
 
     #[test]
@@ -1388,16 +1350,6 @@ mod tests {
         assert!(ids.contains(&"stop-live-transcript"));
         assert!(ids.contains(&"read-live-transcript"));
         assert!(!ids.contains(&"start-live-transcript"));
-    }
-
-    #[test]
-    fn dictation_exposes_stop_not_start() {
-        let visible = visible_commands(&dictation_ctx());
-        let ids = kebabs(&visible);
-        assert!(ids.contains(&"stop-dictation"));
-        assert!(!ids.contains(&"start-dictation"));
-        // Recording starts are also blocked.
-        assert!(!ids.contains(&"start-recording"));
     }
 
     #[test]
@@ -1425,8 +1377,6 @@ mod tests {
         // Add new ids; do not rename existing ones without a migration.
         assert_eq!(ActionId::StartRecording.as_kebab(), "start-recording");
         assert_eq!(ActionId::StopRecording.as_kebab(), "stop-recording");
-        assert_eq!(ActionId::StartDictation.as_kebab(), "start-dictation");
-        assert_eq!(ActionId::StopDictation.as_kebab(), "stop-dictation");
         assert_eq!(
             ActionId::SearchTranscripts { query: None }.as_kebab(),
             "search-transcripts"

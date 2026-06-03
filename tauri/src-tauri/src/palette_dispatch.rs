@@ -51,9 +51,8 @@ use minutes_core::Config;
 
 use crate::commands::{
     cmd_add_note, cmd_create_artifact_from_meeting, cmd_open_meeting_url, cmd_search,
-    cmd_start_dictation, cmd_start_live_transcript, cmd_start_recording, cmd_stop_dictation,
-    cmd_stop_live_transcript, cmd_stop_recording, copy_to_clipboard, dictation_pid_active,
-    open_target, recording_active, AppState,
+    cmd_start_live_transcript, cmd_start_recording, cmd_stop_live_transcript, cmd_stop_recording,
+    copy_to_clipboard, open_target, recording_active, AppState,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -125,8 +124,6 @@ pub enum ActionResponse {
     Ok,
     /// AddNote — the rendered note line that was appended.
     NoteAdded { line: String },
-    /// StopDictation — confirmation message from the dictation pipeline.
-    DictationStopped { detail: String },
     /// ReadLiveTranscript — passthrough JSON array of TranscriptLine.
     LiveLines { lines: serde_json::Value },
     /// SearchTranscripts — passthrough cmd_search shape.
@@ -183,7 +180,6 @@ fn section_name(s: minutes_core::palette::Section) -> &'static str {
     use minutes_core::palette::Section;
     match s {
         Section::Recording => "recording",
-        Section::Dictation => "dictation",
         Section::Navigation => "navigation",
         Section::Search => "search",
         Section::Meeting => "meeting",
@@ -227,11 +223,6 @@ pub(crate) fn backend_flags(state: &AppState) -> StateFlags {
             .is_active();
     if live_in_app || standalone_live_pid {
         f = f.union(StateFlags::LIVE_TRANSCRIPT);
-    }
-
-    let dict_in_app = state.dictation_active.load(Ordering::Relaxed);
-    if dict_in_app || dictation_pid_active() {
-        f = f.union(StateFlags::DICTATION);
     }
 
     f
@@ -482,15 +473,6 @@ fn dispatch_action(
         }
 
         // ── Dictation ────────────────────────────────────────────
-        ActionId::StartDictation => {
-            cmd_start_dictation(app, state)?;
-            Ok(ActionResponse::Ok)
-        }
-        ActionId::StopDictation => {
-            let detail = cmd_stop_dictation(state)?;
-            Ok(ActionResponse::DictationStopped { detail })
-        }
-
         // ── Navigation ───────────────────────────────────────────
         ActionId::OpenLatestMeeting => {
             let config = Config::load();
@@ -856,16 +838,6 @@ mod tests {
             v.get("line").and_then(|x| x.as_str()),
             Some("[00:01:23] note text")
         );
-    }
-
-    #[test]
-    fn action_response_dictation_stopped_has_detail() {
-        let v = serde_json::to_value(ActionResponse::DictationStopped {
-            detail: "stopped".into(),
-        })
-        .unwrap();
-        assert_kind(&v, "dictation-stopped");
-        assert_eq!(v.get("detail").and_then(|x| x.as_str()), Some("stopped"));
     }
 
     #[test]
