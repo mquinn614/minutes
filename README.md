@@ -12,7 +12,7 @@ It transcribes entirely on your machine — no cloud, no API keys, no audio ever
 
 ## What it does
 
-- **Draft a bracket.** 16 buzzwords seeded into a tournament — the default set runs `game changer`, `AI`, `circle back`, `drill down`, `low-hanging fruit`, `move the needle`, `RTO`, `paradigm shift`, and more. Edit your own via **Modify Buzzwords** (each seed can carry alias spellings).
+- **Draft a bracket.** 16 buzzwords seeded into a tournament — the default set runs `game changer`, `circle back`, `drill down`, `low-hanging fruit`, `move the needle`, `RTO`, `paradigm shift`, and more. Edit your own via **Modify Buzzwords** (each seed can carry alias spellings). Going big? Switch to **Conferences · 32 teams** for two named columns — e.g. Tech vs Sales — whose winners meet in a Grand Final.
 - **Players make picks.** Everyone predicts the winner of each matchup and the champion buzzword, via a share code or the standalone picks page.
 - **Listen + score live.** During the meeting, Minutes Madness transcribes in real time and tallies every buzzword mention. Brackets score as it happens, the leaderboard reshuffles, and a champion fanfare fires when the dust settles.
 - **Or score a transcript.** No mic? Paste a transcript (or point at a meeting's `.jsonl`) in **Transcript Mode** and score the bracket after the fact.
