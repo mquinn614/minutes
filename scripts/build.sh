@@ -124,6 +124,25 @@ else
     echo "  WARNING: expected sidecar not found at $SIDECAR — skipping re-sign."
 fi
 
+# CRITICAL: re-seal the OUTER bundle now that the sidecar is in its final state.
+# The `--deep` sign above sealed the bundle over the sidecar's *pre-re-sign*
+# hash; re-signing the sidecar afterward invalidated that seal, so a quarantined
+# (downloaded) copy fails Gatekeeper with "nested code is modified or invalid"
+# → the user sees "'Minutes Madness' is damaged and can't be opened." Re-signing
+# the outer bundle WITHOUT --deep re-records the final nested hashes (and leaves
+# the sidecar's own entitlements signature intact), so the seal validates.
+echo "=== Re-sealing ${APP_NAME}.app outer bundle (over the final sidecar) ==="
+if [[ "$SIGN_ID" == "-" ]]; then
+    codesign --force --sign - "$APP_BUNDLE"
+else
+    codesign --force --options runtime --timestamp \
+        --entitlements tauri/src-tauri/entitlements.plist \
+        --sign "$SIGN_ID" "$APP_BUNDLE"
+fi
+codesign --verify --deep --strict "$APP_BUNDLE" \
+    && echo "  Signature valid (codesign --verify passed)" \
+    || echo "  WARNING: codesign --verify FAILED — the bundle seal is broken."
+
 APP_VERSION="$(python3 - <<'PY'
 import json
 from pathlib import Path

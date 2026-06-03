@@ -26,7 +26,10 @@ Everything runs locally with [whisper.cpp](https://github.com/ggerganov/whisper.
 ### macOS (Apple Silicon)
 
 1. Download `Minutes-Madness-macOS-arm64-<version>.zip` and unzip it.
-2. The build is ad-hoc signed, so the first launch needs **right-click → Open** (then confirm) to clear Gatekeeper. Drag it to `/Applications` if you like.
+2. The build is ad-hoc signed (not notarized), so Gatekeeper blocks the first launch — usually **right-click → Open → Open**. If you instead see **"Minutes Madness is damaged and can't be opened,"** that's Gatekeeper on the downloaded copy; clear it from Terminal (adjust the path), then double-click:
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Minutes Madness.app"
+   ```
 3. Grant **Microphone** when prompted. To score a *remote* meeting (Zoom/Meet on headphones), also grant **Audio Recording** for system-audio capture — Minutes Madness uses the native macOS tap, so no extra software (BlackHole etc.) is needed.
 
 ### Windows (10/11, x64)

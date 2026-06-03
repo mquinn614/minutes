@@ -135,6 +135,25 @@ else
   echo "  WARNING: sidecar not found at $SIDECAR_RESIGN — skipping re-sign."
 fi
 
+# CRITICAL: re-seal the OUTER bundle now that the sidecar is final. The --deep
+# sign above sealed the bundle over the sidecar's pre-re-sign hash; re-signing
+# the sidecar invalidated that seal, so a quarantined (downloaded) copy fails
+# Gatekeeper with "nested code is modified or invalid" → "...is damaged and
+# can't be opened." Re-signing the outer bundle WITHOUT --deep re-records the
+# final nested hashes while leaving the sidecar's own signature intact.
+echo "=== Re-sealing ${DEV_PRODUCT_NAME}.app outer bundle (over the final sidecar) ==="
+if [[ "$SIGN_MODE" == "identity" ]]; then
+  codesign --force --options runtime --timestamp \
+    --entitlements tauri/src-tauri/entitlements.plist \
+    --sign "$SIGNING_IDENTITY" \
+    "$BUILD_APP"
+else
+  codesign --force --sign - "$BUILD_APP"
+fi
+codesign --verify --deep --strict "$BUILD_APP" \
+  && echo "  Signature valid (codesign --verify passed)" \
+  || echo "  WARNING: codesign --verify FAILED — the bundle seal is broken."
+
 echo "=== Installing ${DEV_PRODUCT_NAME}.app to ${INSTALL_DIR} ==="
 mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_APP"
