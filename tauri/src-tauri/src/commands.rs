@@ -10493,6 +10493,81 @@ mod tests {
         });
     }
 
+    #[test]
+    fn set_terms_32_creates_conferences_bracket_with_themes() {
+        with_temp_home(|_| {
+            let lines: Vec<String> = (1..=32).map(|i| format!("term{i}")).collect();
+            let game = cmd_madness_set_terms(
+                None,
+                "Tech vs Sales".to_string(),
+                lines,
+                Some(vec![" Tech ".to_string(), "Sales".to_string()]),
+            )
+            .expect("32-term conferences bracket should save");
+            assert_eq!(game.terms.len(), 32);
+            assert!(game.is_conferences());
+            // themes are trimmed and applied in order (seeds 1-16, 17-32)
+            assert_eq!(
+                game.conferences,
+                vec!["Tech".to_string(), "Sales".to_string()]
+            );
+            // and they survive the round-trip to disk
+            let reloaded = minutes_core::madness::load_game(&game.slug).unwrap();
+            assert_eq!(
+                reloaded.conferences,
+                vec!["Tech".to_string(), "Sales".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn set_terms_32_defaults_conference_names_when_absent_or_blank() {
+        with_temp_home(|_| {
+            let lines: Vec<String> = (1..=32).map(|i| format!("x{i}")).collect();
+            // None, and a half-blank pair, both fall back to the defaults.
+            for conferences in [None, Some(vec!["Tech".to_string(), "  ".to_string()])] {
+                let game = cmd_madness_set_terms(
+                    None,
+                    "Untitled".to_string(),
+                    lines.clone(),
+                    conferences,
+                )
+                .unwrap();
+                assert!(game.is_conferences());
+                assert_eq!(
+                    game.conferences,
+                    vec!["Conference A".to_string(), "Conference B".to_string()]
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn set_terms_clears_stale_conferences_when_dropping_to_16() {
+        with_temp_home(|_| {
+            let lines32: Vec<String> = (1..=32).map(|i| format!("t{i}")).collect();
+            let conf = cmd_madness_set_terms(
+                None,
+                "Conf".to_string(),
+                lines32,
+                Some(vec!["A".to_string(), "B".to_string()]),
+            )
+            .unwrap();
+            // Editing the SAME bracket down to 16 terms drops the conference labels.
+            let lines16: Vec<String> = (1..=16).map(|i| format!("c{i}")).collect();
+            let classic = cmd_madness_set_terms(
+                Some(conf.slug.clone()),
+                "Classic".to_string(),
+                lines16,
+                None,
+            )
+            .unwrap();
+            assert_eq!(classic.terms.len(), 16);
+            assert!(!classic.is_conferences());
+            assert!(classic.conferences.is_empty());
+        });
+    }
+
     fn hash_file_bytes(path: &Path) -> u64 {
         let bytes = std::fs::read(path).expect("meeting file must exist");
         let mut hasher = DefaultHasher::new();
