@@ -11793,10 +11793,11 @@ pub fn cmd_madness_set_terms(
         return Err("give the bracket a title".into());
     }
     let terms = madness::parse_terms_file(&lines.join("\n")).map_err(|e| e.to_string())?;
-    if terms.len() != madness::BRACKET_SIZE {
+    if terms.len() != madness::BRACKET_SIZE && terms.len() != madness::CONFERENCES_BRACKET_SIZE {
         return Err(format!(
-            "need exactly {} buzzwords, got {}",
+            "need {} buzzwords (classic) or {} (conferences), got {}",
             madness::BRACKET_SIZE,
+            madness::CONFERENCES_BRACKET_SIZE,
             terms.len()
         ));
     }
@@ -11837,11 +11838,16 @@ pub fn cmd_madness_add_player(
     seeds: Vec<u8>,
 ) -> Result<minutes_core::madness::BracketGame, String> {
     use minutes_core::madness;
-    let expected = madness::MATCHUP_COUNT as usize;
+    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
+    // A conferences (32) bracket has 31 matchups; a classic bracket has 15.
+    let expected = if game.is_conferences() {
+        madness::CONFERENCES_MATCHUP_COUNT as usize
+    } else {
+        madness::MATCHUP_COUNT as usize
+    };
     if seeds.len() != expected {
         return Err(format!("expected {expected} picks, got {}", seeds.len()));
     }
-    let mut game = madness::load_game(&slug).map_err(|e| e.to_string())?;
     let mut picks = std::collections::BTreeMap::new();
     for (i, seed) in seeds.iter().enumerate() {
         picks.insert((i + 1) as u8, *seed);

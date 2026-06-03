@@ -1002,17 +1002,23 @@ enum Commands {
 /// Subcommands for `minutes madness`.
 #[derive(Subcommand)]
 enum MadnessAction {
-    /// Create a new bracket from a 16-line terms file (seed = line order).
+    /// Create a new bracket from a 16- or 32-line terms file (seed = line order).
     New {
         /// Human-readable title (used to derive the slug).
         #[arg(long)]
         title: String,
         /// Path to a terms file: one term per line, `Label | alias | alias`.
+        /// 16 lines = classic bracket; 32 lines = conferences mode (lines 1-16
+        /// are conference A, 17-32 are conference B).
         #[arg(long)]
         terms: PathBuf,
         /// Override the auto-derived slug.
         #[arg(long)]
         slug: Option<String>,
+        /// Conferences mode only: two comma-separated conference labels, e.g.
+        /// `--conferences "Tech,Sales"` (label 1 = seeds 1-16, label 2 = 17-32).
+        #[arg(long)]
+        conferences: Option<String>,
     },
     /// Add or replace a player's full-bracket picks.
     Pick {
@@ -9043,12 +9049,28 @@ fn cmd_transcript(_since: Option<&str>, _status: bool, _format: &str) -> Result<
 fn cmd_madness(action: MadnessAction) -> Result<()> {
     use minutes_core::madness;
     match action {
-        MadnessAction::New { title, terms, slug } => {
+        MadnessAction::New {
+            title,
+            terms,
+            slug,
+            conferences,
+        } => {
             let content = std::fs::read_to_string(&terms).map_err(|e| {
                 anyhow::anyhow!("failed to read terms file {}: {e}", terms.display())
             })?;
             let parsed = madness::parse_terms_file(&content)?;
-            let game = madness::BracketGame::new(&title, slug.as_deref(), parsed)?;
+            let mut game = madness::BracketGame::new(&title, slug.as_deref(), parsed)?;
+            if game.is_conferences() {
+                // Default the conference labels if not supplied, so a 32-term
+                // bracket always renders two named halves.
+                let names: Vec<String> = conferences
+                    .as_deref()
+                    .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
+                    .unwrap_or_else(|| vec!["Conference A".into(), "Conference B".into()]);
+                game.set_conferences(names);
+            } else if conferences.is_some() {
+                eprintln!("note: --conferences is ignored for a 16-term (classic) bracket");
+            }
             madness::save_game(&game)?;
             println!("Created bracket \"{}\"  (slug: {})", game.title, game.slug);
             println!();

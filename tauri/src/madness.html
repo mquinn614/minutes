@@ -644,6 +644,48 @@
     }
     function resolve(counts) { return resolveUpTo(counts, 99); }
 
+    // ── Conferences (32-team) mode ────────────────────────────────
+    const ROUND_NAMES_32 = { 1: 'Round of 16', 2: 'Quarterfinals', 3: 'Semifinals', 4: 'Conference Final', 5: 'Grand Final' };
+    function isConferences(game) { return !!(game && Array.isArray(game.terms) && game.terms.length === 32); }
+
+    // Resolve a 32-team conferences bracket from a {seed: count} map. Mirrors the
+    // core resolver: conference A (seeds 1-16) → matchup ids 1-15, conference B
+    // (seeds 17-32) → ids 16-30, grand final = id 31 (round 5). Undecided
+    // winners stay 0 (same live-fill + maxRound reveal behavior as the 16 path).
+    function resolveConferencesUpTo(counts, maxRound) {
+      if (maxRound == null) maxRound = 99;
+      const matchups = [];
+      function conf(seedOrder, startId) {
+        let slots = seedOrder.slice();
+        let id = startId, round = 1;
+        while (slots.length > 1) {
+          const next = [];
+          for (let i = 0; i < slots.length; i += 2) {
+            const a = slots[i], b = slots[i + 1];
+            let w = 0;
+            if (round <= maxRound && a && b) {
+              const ca = counts[a] || 0, cb = counts[b] || 0;
+              if (ca > 0 || cb > 0) w = ca > cb ? a : (cb > ca ? b : Math.min(a, b));
+            }
+            matchups.push({ id, round, a, b, winner: w });
+            next.push(w);
+            id++;
+          }
+          slots = next; round++;
+        }
+        return slots[0];
+      }
+      const champA = conf(SEED_ORDER, 1);                 // ids 1-15
+      const champB = conf(SEED_ORDER.map((s) => s + 16), 16); // ids 16-30
+      let gw = 0;
+      if (maxRound >= 5 && champA && champB) {
+        const ca = counts[champA] || 0, cb = counts[champB] || 0;
+        if (ca > 0 || cb > 0) gw = ca > cb ? champA : (cb > ca ? champB : Math.min(champA, champB));
+      }
+      matchups.push({ id: 31, round: 5, a: champA, b: champB, winner: gw });
+      return { matchups, champion: gw, champA, champB };
+    }
+
     function labelOf(game, seed) {
       const t = game.terms.find((t) => t.seed === seed);
       return t ? t.label : '#' + seed;
@@ -685,6 +727,7 @@
     }
 
     function renderBracket(game, maxRound) {
+      if (isConferences(game)) { renderConferencesBracket(game, maxRound); return; }
       const counts = {};
       const res = game.results;
       for (const s of SEED_ORDER) counts[s] = res ? (res.counts[s] || 0) : 0;
@@ -732,6 +775,56 @@
       requestAnimationFrame(() => { fitBracket(); drawConnectors(); });
     }
 
+    // Render a 32-team conferences bracket: conference A (Tech) wing on the
+    // left flows inward through R16 → QF → SF → Conference Final; the grand
+    // final + champion sit in the center; conference B (Sales) mirrors on the
+    // right. Reuses the per-matchup render helpers; conference names ride the
+    // outermost round labels so it's clear which half is which.
+    function renderConferencesBracket(game, maxRound) {
+      const counts = {};
+      const res = game.results;
+      for (let s = 1; s <= 32; s++) counts[s] = res ? (res.counts[s] || 0) : 0;
+      const r = resolveConferencesUpTo(counts, maxRound);
+      const matchups = r.matchups;
+      const champion = r.champion;
+      const picks = selectedPicks;
+      const aName = (game.conferences && game.conferences[0]) || 'Conference A';
+      const bName = (game.conferences && game.conferences[1]) || 'Conference B';
+      const bracket = document.getElementById('bracket');
+      bracket.innerHTML = `
+        <div class="col">${colHtml(game, counts, matchups, [1, 2, 3, 4, 5, 6, 7, 8], aName + ' · Round of 16', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [9, 10, 11, 12], 'Quarterfinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [13, 14], 'Semifinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [15], aName + ' Final', picks)}</div>
+        <div class="col center">
+          <div class="champion">
+            <div class="crown">\u{1F3C6}</div>
+            <div class="name">${champion ? labelOf(game, champion) : '—'}</div>
+            <div class="sub">${champion ? 'Champion · ' + (counts[champion] || 0) + ' mentions' : 'awaiting buzzwords'}</div>
+          </div>
+          <div class="roundlabel">Grand Final</div>
+          ${matchHtml(game, counts, matchById(matchups, 31), picks)}
+        </div>
+        <div class="col">${colHtml(game, counts, matchups, [30], bName + ' Final', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [28, 29], 'Semifinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [24, 25, 26, 27], 'Quarterfinals', picks)}</div>
+        <div class="col">${colHtml(game, counts, matchups, [16, 17, 18, 19, 20, 21, 22, 23], bName + ' · Round of 16', picks)}</div>
+      `;
+      if (flashSeeds.length) {
+        for (const s of flashSeeds) bracket.querySelectorAll(`.slot[data-seed="${s}"]`).forEach((el) => el.classList.add('flash'));
+        flashSeeds = [];
+      }
+      if (correctSeeds.length) {
+        for (const s of correctSeeds) bracket.querySelectorAll(`.slot[data-seed="${s}"]`).forEach((el) => el.classList.add('correct-flash'));
+        correctSeeds = [];
+      }
+      // Connectors are 16-bracket-specific geometry; the column layout + round
+      // labels carry the structure for conferences mode.
+      const svg = document.getElementById('connectors');
+      if (svg) svg.innerHTML = '';
+      requestAnimationFrame(() => { fitBracket(); });
+    }
+
     // Scale the fixed-width bracket down to fit the viewport so the whole
     // tournament is always visible (never upscaled past 1:1).
     function fitBracket() {
@@ -749,6 +842,8 @@
     function parentOf(id) { return id <= 14 ? 8 + Math.ceil(id / 2) : null; }
 
     function drawConnectors() {
+      // Conferences (32) mode uses its own layout without SVG connectors.
+      if (isConferences(current)) { const s = document.getElementById('connectors'); if (s) s.innerHTML = ''; return; }
       const svg = document.getElementById('connectors');
       const wrap = document.getElementById('bracket-wrap');
       const base = wrap.getBoundingClientRect();
