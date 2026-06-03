@@ -33,6 +33,19 @@ pub const SEED_ORDER: [u8; 16] = [1, 16, 8, 9, 5, 12, 4, 13, 6, 11, 3, 14, 7, 10
 /// Points awarded for a correct pick in each round (round 1 → final).
 pub const ROUND_POINTS: [u32; 4] = [1, 2, 4, 8];
 
+/// Conferences mode: two 16-seed conferences (e.g. Tech vs Sales) whose
+/// champions meet in a grand final. Seeds 1..=16 are conference A, 17..=32 are
+/// conference B. Detected by `terms.len() == CONFERENCES_BRACKET_SIZE`.
+pub const CONFERENCES_BRACKET_SIZE: usize = 32;
+
+/// Total matchups in a 32-team conferences bracket: 15 per conference + the
+/// grand final.
+pub const CONFERENCES_MATCHUP_COUNT: u8 = 31;
+
+/// Points per round for the conferences bracket (round 1 → grand final). The
+/// grand final (round 5) is weighted double the conference final.
+pub const ROUND_POINTS_32: [u32; 5] = [1, 2, 4, 8, 16];
+
 /// A single seeded buzzword. `aliases` are alternate spellings the
 /// transcriber might emit (e.g. "AI powered" for "AI-powered").
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,12 +96,13 @@ pub struct PlayerScore {
     pub points: u32,
     /// Count of correctly predicted matchups.
     pub correct: u32,
-    /// Correct picks per round (index 0 = round 1 / Round of 16 … 3 = Final).
+    /// Correct picks per round (index 0 = round 1 … ). 4 entries for a classic
+    /// bracket, 5 for conferences (round 5 = grand final).
     #[serde(default)]
-    pub round_correct: [u32; 4],
-    /// Round-weighted points earned per round.
+    pub round_correct: Vec<u32>,
+    /// Round-weighted points earned per round (same indexing as `round_correct`).
     #[serde(default)]
-    pub round_points: [u32; 4],
+    pub round_points: Vec<u32>,
     /// The seed this player picked to win it all (their Final pick).
     #[serde(default)]
     pub predicted_champion: u8,
@@ -125,8 +139,13 @@ pub struct BracketGame {
     pub title: String,
     /// Creation timestamp.
     pub created_at: DateTime<Local>,
-    /// The 16 seeded terms.
+    /// The seeded terms: 16 (classic) or 32 (conferences mode).
     pub terms: Vec<Term>,
+    /// Conference labels for a 32-team bracket (e.g. `["Tech", "Sales"]`):
+    /// index 0 covers seeds 1..=16, index 1 covers seeds 17..=32. Empty for a
+    /// classic 16-seed bracket.
+    #[serde(default)]
+    pub conferences: Vec<String>,
     /// Registered players and their picks.
     #[serde(default)]
     pub players: Vec<Player>,
@@ -139,9 +158,9 @@ impl BracketGame {
     /// Create a new game from an ordered list of terms (seed = position + 1).
     /// Returns an error unless exactly 16 terms are supplied.
     pub fn new(title: &str, slug: Option<&str>, labels: Vec<Term>) -> Result<Self, MadnessError> {
-        if labels.len() != BRACKET_SIZE {
+        if labels.len() != BRACKET_SIZE && labels.len() != CONFERENCES_BRACKET_SIZE {
             return Err(MadnessError::InvalidTerms(format!(
-                "expected {BRACKET_SIZE} terms, got {}",
+                "expected {BRACKET_SIZE} or {CONFERENCES_BRACKET_SIZE} terms, got {}",
                 labels.len()
             )));
         }
@@ -159,9 +178,21 @@ impl BracketGame {
             title: title.to_string(),
             created_at: Local::now(),
             terms: labels,
+            conferences: Vec::new(),
             players: Vec::new(),
             results: None,
         })
+    }
+
+    /// True when this is a 32-team conferences bracket (two 16-seed halves).
+    pub fn is_conferences(&self) -> bool {
+        self.terms.len() == CONFERENCES_BRACKET_SIZE
+    }
+
+    /// Set the two conference labels (index 0 = seeds 1..=16, index 1 =
+    /// seeds 17..=32). Only meaningful for a conferences bracket.
+    pub fn set_conferences(&mut self, names: Vec<String>) {
+        self.conferences = names;
     }
 
     /// Look up a term by seed.
@@ -180,7 +211,11 @@ impl BracketGame {
     /// predicted and that each pick is a legal participant of its matchup
     /// given the player's own earlier picks.
     pub fn set_player(&mut self, player: Player) -> Result<(), MadnessError> {
-        validate_picks(&player.picks)?;
+        if self.is_conferences() {
+            validate_picks_conferences(&player.picks)?;
+        } else {
+            validate_picks(&player.picks)?;
+        }
         self.players.retain(|p| p.name != player.name);
         self.players.push(player);
         Ok(())
@@ -189,13 +224,23 @@ impl BracketGame {
     /// Score the bracket against transcript text, populating `results`.
     pub fn score(&mut self, transcript: &str) -> &Results {
         let counts = count_mentions(transcript, &self.terms);
-        let matchups = resolve_bracket(&counts);
+        let conferences = self.is_conferences();
+        let matchups = if conferences {
+            resolve_conferences(&counts)
+        } else {
+            resolve_bracket(&counts)
+        };
         let champion = matchups
             .last()
             .map(|m| m.winner)
             .expect("bracket always has a final matchup");
         let total_mentions: u32 = counts.values().sum();
-        let standings = score_players(&self.players, &matchups, total_mentions);
+        let round_points: &[u32] = if conferences {
+            &ROUND_POINTS_32
+        } else {
+            &ROUND_POINTS
+        };
+        let standings = score_players(&self.players, &matchups, total_mentions, round_points);
         self.results = Some(Results {
             counts,
             matchups,
@@ -229,7 +274,12 @@ impl BracketGame {
         else {
             return;
         };
-        let standings = score_players(&self.players, &matchups, total);
+        let round_points: &[u32] = if self.is_conferences() {
+            &ROUND_POINTS_32
+        } else {
+            &ROUND_POINTS
+        };
+        let standings = score_players(&self.players, &matchups, total, round_points);
         if let Some(res) = self.results.as_mut() {
             res.standings = standings;
         }
@@ -338,6 +388,66 @@ pub fn resolve_bracket(counts: &BTreeMap<u8, u32>) -> Vec<Matchup> {
     matchups
 }
 
+/// Resolve one 16-seed conference from `seed_order` (already containing the
+/// conference's real seeds, e.g. 17..=32 for conference B), assigning matchup
+/// ids starting at `start_id`. Appends the conference's 15 matchups to `out`
+/// and returns the conference champion seed. Mirrors `resolve_bracket`'s loop.
+fn resolve_one_conference(
+    seed_order: &[u8],
+    counts: &BTreeMap<u8, u32>,
+    start_id: u8,
+    out: &mut Vec<Matchup>,
+) -> u8 {
+    let mut slots: Vec<u8> = seed_order.to_vec();
+    let mut id = start_id;
+    let mut round: u8 = 1;
+    while slots.len() > 1 {
+        let mut next = Vec::with_capacity(slots.len() / 2);
+        let mut i = 0;
+        while i < slots.len() {
+            let a = slots[i];
+            let b = slots[i + 1];
+            let winner = advance(a, b, counts);
+            out.push(Matchup {
+                id,
+                round,
+                a,
+                b,
+                winner,
+            });
+            next.push(winner);
+            id += 1;
+            i += 2;
+        }
+        slots = next;
+        round += 1;
+    }
+    slots[0]
+}
+
+/// Resolve a 32-team conferences bracket from mention counts. Conference A
+/// (seeds 1..=16) takes matchup ids 1..=15, conference B (seeds 17..=32) takes
+/// ids 16..=30, and the grand final (the two conference champions) is id 31,
+/// round 5. Returns all 31 matchups in id order.
+pub fn resolve_conferences(counts: &BTreeMap<u8, u32>) -> Vec<Matchup> {
+    let mut matchups = Vec::with_capacity(CONFERENCES_MATCHUP_COUNT as usize);
+    // Conference A: seeds 1..=16 in standard seed order, ids 1..=15.
+    let champ_a = resolve_one_conference(&SEED_ORDER, counts, 1, &mut matchups);
+    // Conference B: seeds 17..=32 (SEED_ORDER + 16), ids 16..=30.
+    let seed_order_b: Vec<u8> = SEED_ORDER.iter().map(|s| s + BRACKET_SIZE as u8).collect();
+    let champ_b = resolve_one_conference(&seed_order_b, counts, 16, &mut matchups);
+    // Grand final: id 31, round 5.
+    let winner = advance(champ_a, champ_b, counts);
+    matchups.push(Matchup {
+        id: CONFERENCES_MATCHUP_COUNT,
+        round: 5,
+        a: champ_a,
+        b: champ_b,
+        winner,
+    });
+    matchups
+}
+
 /// The two child matchup ids feeding matchup `m` (only valid for m > 8).
 fn feeder_matchups(m: u8) -> (u8, u8) {
     (2 * (m - 8) - 1, 2 * (m - 8))
@@ -380,30 +490,102 @@ pub fn validate_picks(picks: &BTreeMap<u8, u8>) -> Result<(), MadnessError> {
     Ok(())
 }
 
+/// Conferences-bracket version of [`matchup_participants`]. Matchup ids 1..=15
+/// are conference A (identical to a classic bracket), 16..=30 are conference B
+/// (the same shape over seeds 17..=32), and id 31 is the grand final between
+/// the two conference champions (matchups 15 and 30).
+pub fn matchup_participants_conferences(
+    picks: &BTreeMap<u8, u8>,
+    m: u8,
+) -> Result<(u8, u8), MadnessError> {
+    let offset = BRACKET_SIZE as u8; // 16
+    if (1..=MATCHUP_COUNT).contains(&m) {
+        // Conference A reuses the classic logic verbatim.
+        matchup_participants(picks, m)
+    } else if (offset..MATCHUP_COUNT + offset).contains(&m) {
+        // Conference B: within-conference matchup id is m - 15.
+        let wc = m - MATCHUP_COUNT; // 1..=15
+        if (1..=8).contains(&wc) {
+            let idx = 2 * (wc as usize - 1);
+            Ok((SEED_ORDER[idx] + offset, SEED_ORDER[idx + 1] + offset))
+        } else {
+            let (c1, c2) = feeder_matchups(wc); // within-conference feeder ids
+            let g1 = c1 + MATCHUP_COUNT; // map to global conference-B ids
+            let g2 = c2 + MATCHUP_COUNT;
+            let w1 = *picks.get(&g1).ok_or_else(|| {
+                MadnessError::InvalidPicks(format!("missing pick for matchup {g1}"))
+            })?;
+            let w2 = *picks.get(&g2).ok_or_else(|| {
+                MadnessError::InvalidPicks(format!("missing pick for matchup {g2}"))
+            })?;
+            Ok((w1, w2))
+        }
+    } else if m == CONFERENCES_MATCHUP_COUNT {
+        // Grand final: conference A champion (matchup 15) vs B champion (30).
+        let w1 = *picks
+            .get(&MATCHUP_COUNT)
+            .ok_or_else(|| MadnessError::InvalidPicks("missing pick for matchup 15".into()))?;
+        let w2 = *picks.get(&(MATCHUP_COUNT + offset - 1)).ok_or_else(|| {
+            MadnessError::InvalidPicks(format!(
+                "missing pick for matchup {}",
+                MATCHUP_COUNT + offset - 1
+            ))
+        })?;
+        Ok((w1, w2))
+    } else {
+        Err(MadnessError::InvalidPicks(format!(
+            "matchup {m} out of range for a conferences bracket"
+        )))
+    }
+}
+
+/// Validate a full 32-team conferences pick set (all 31 matchups predicted,
+/// each pick a legal participant given the player's earlier picks).
+pub fn validate_picks_conferences(picks: &BTreeMap<u8, u8>) -> Result<(), MadnessError> {
+    for m in 1..=CONFERENCES_MATCHUP_COUNT {
+        let pick = *picks
+            .get(&m)
+            .ok_or_else(|| MadnessError::InvalidPicks(format!("missing pick for matchup {m}")))?;
+        let (a, b) = matchup_participants_conferences(picks, m)?;
+        if pick != a && pick != b {
+            return Err(MadnessError::InvalidPicks(format!(
+                "matchup {m}: seed {pick} is not a participant (expected {a} or {b})"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Score all players against the resolved matchups.
 fn score_players(
     players: &[Player],
     matchups: &[Matchup],
     total_mentions: u32,
+    round_points_by_round: &[u32],
 ) -> Vec<PlayerScore> {
+    let rounds = round_points_by_round.len();
+    // The last matchup is the (grand) final; its id is the champion pick id
+    // (15 for a classic bracket, 31 for conferences).
+    let final_matchup_id = matchups.last().map(|m| m.id).unwrap_or(0);
     let actual_champion = matchups.last().map(|m| m.winner).unwrap_or(0);
     let mut scores: Vec<PlayerScore> = players
         .iter()
         .map(|p| {
             let mut points = 0;
             let mut correct = 0;
-            let mut round_correct = [0u32; 4];
-            let mut round_points = [0u32; 4];
+            let mut round_correct = vec![0u32; rounds];
+            let mut round_points = vec![0u32; rounds];
             for m in matchups {
                 if p.picks.get(&m.id) == Some(&m.winner) {
                     let r = (m.round - 1) as usize;
-                    points += ROUND_POINTS[r];
+                    let pts = round_points_by_round.get(r).copied().unwrap_or(0);
+                    points += pts;
                     correct += 1;
                     round_correct[r] += 1;
-                    round_points[r] += ROUND_POINTS[r];
+                    round_points[r] += pts;
                 }
             }
-            let predicted_champion = p.picks.get(&MATCHUP_COUNT).copied().unwrap_or(0);
+            let predicted_champion = p.picks.get(&final_matchup_id).copied().unwrap_or(0);
             let tiebreaker_delta = p.tiebreaker_total.map(|g| g.abs_diff(total_mentions));
             PlayerScore {
                 name: p.name.clone(),
@@ -1221,6 +1403,51 @@ mod tests {
         assert!(text.contains("leverage synergy"));
         assert!(text.contains("Circle back"));
         assert!(!text.contains("blah"));
+    }
+
+    #[test]
+    fn conferences_bracket_resolves_scores_and_validates() {
+        // 32 seeded terms → conferences mode.
+        let labels: Vec<Term> = (1..=32)
+            .map(|s| Term {
+                seed: s,
+                label: format!("t{s}"),
+                aliases: vec![],
+            })
+            .collect();
+        let mut game = BracketGame::new("Conf Test", Some("conf-test"), labels).unwrap();
+        game.set_conferences(vec!["Tech".into(), "Sales".into()]);
+        assert!(game.is_conferences());
+
+        // All-zero counts → chalk (lower seed advances). 31 matchups, 5 rounds.
+        let zero: BTreeMap<u8, u32> = (1..=32u8).map(|s| (s, 0u32)).collect();
+        let matchups = resolve_conferences(&zero);
+        assert_eq!(matchups.len(), CONFERENCES_MATCHUP_COUNT as usize);
+        let gf = matchups.last().unwrap();
+        assert_eq!(gf.id, CONFERENCES_MATCHUP_COUNT);
+        assert_eq!(gf.round, 5);
+        // Conf A champ = seed 1, Conf B champ = seed 17; grand final winner = 1.
+        assert_eq!((gf.a, gf.b, gf.winner), (1, 17, 1));
+
+        // Chalk pick set (every matchup → its chalk winner) validates.
+        let picks: BTreeMap<u8, u8> = matchups.iter().map(|m| (m.id, m.winner)).collect();
+        assert!(validate_picks_conferences(&picks).is_ok());
+
+        // A chalk player scores all 31 on an empty transcript (all-zero counts).
+        game.set_player(Player {
+            name: "Chalk".into(),
+            picks,
+            tiebreaker_total: None,
+        })
+        .unwrap();
+        let results = game.score("");
+        assert_eq!(results.champion, 1);
+        assert_eq!(results.matchups.len(), CONFERENCES_MATCHUP_COUNT as usize);
+        let chalk = &results.standings[0];
+        assert_eq!(chalk.correct, CONFERENCES_MATCHUP_COUNT as u32);
+        assert_eq!(chalk.round_correct.len(), 5);
+        // Per conference: r1 8×1 + r2 4×2 + r3 2×4 + r4 1×8 = 32; ×2 = 64; grand final 1×16 → 80.
+        assert_eq!(chalk.points, 80);
     }
 
     #[test]
