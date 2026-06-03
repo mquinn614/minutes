@@ -882,27 +882,9 @@ async fn check_for_update(app: &tauri::AppHandle, manual: bool) {
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     #[cfg(target_os = "macos")]
     let app_menu = {
-        let about_item =
-            MenuItem::with_id(app, "app-show-about", "About Minutes", true, None::<&str>)?;
-        let whats_new_item =
-            MenuItem::with_id(app, "app-show-whats-new", "What’s New…", true, None::<&str>)?;
-        let settings_item =
-            MenuItem::with_id(app, "app-open-settings", "Settings…", true, Some("Cmd+,"))?;
-        let check_updates_item = MenuItem::with_id(
-            app,
-            "app-check-for-updates",
-            "Check for Updates…",
-            true,
-            None::<&str>,
-        )?;
         let quit_item = MenuItem::with_id(app, "app-quit", "Quit Minutes", true, Some("Cmd+Q"))?;
 
         SubmenuBuilder::new(app, &app.package_info().name)
-            .item(&about_item)
-            .item(&whats_new_item)
-            .item(&settings_item)
-            .item(&check_updates_item)
-            .separator()
             .services()
             .separator()
             .hide()
@@ -1301,24 +1283,6 @@ fn main() {
     tauri::Builder::default()
         .menu(build_app_menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "app-show-about" => {
-                show_main_window(app);
-                let _ = app.emit("minutes://show-about", ());
-            }
-            "app-show-whats-new" => {
-                show_main_window(app);
-                let _ = app.emit("minutes://show-whats-new", ());
-            }
-            "app-open-settings" => {
-                show_main_window(app);
-                let _ = app.emit("minutes://show-settings", ());
-            }
-            "app-check-for-updates" => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    check_for_update(&handle, true).await;
-                });
-            }
             "app-open-main" => {
                 show_main_window(app);
             }
