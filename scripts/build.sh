@@ -71,9 +71,14 @@ mkdir -p tauri/src-tauri/bin
 cp -f target/release/minutes "tauri/src-tauri/bin/minutes-${HOST_TARGET}"
 
 echo "=== Building Tauri app ==="
+# Production identity comes from tauri.conf.json: productName "Minutes Madness",
+# bundle id com.useminutes.madness. (The dev variant — "Minutes Madness Dev" /
+# com.useminutes.madness.dev — is built by scripts/install-dev-app.sh.)
 # The calendar-events Swift helper is compiled and staged into
 # tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
-# into Minutes.app/Contents/Resources/ automatically via tauri.conf.json.
+# into the .app/Contents/Resources/ automatically via tauri.conf.json.
+APP_NAME="Minutes Madness"
+APP_BUNDLE="target/release/bundle/macos/${APP_NAME}.app"
 TAURI_BUILD_ARGS=(cargo tauri build --features "$MINUTES_BUILD_FEATURES" --bundles app)
 if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
     echo "  No TAURI_SIGNING_PRIVATE_KEY configured; building updater artifacts with --no-sign."
@@ -81,28 +86,39 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
 fi
 "${TAURI_BUILD_ARGS[@]}"
 
+# Sign the .app. With a real Apple identity (APPLE_SIGNING_IDENTITY /
+# MINUTES_DEV_SIGNING_IDENTITY) use hardened runtime + entitlements; otherwise
+# fall back to ad-hoc so the bundle still launches for local/field testing.
+# Mirrors scripts/install-dev-app.sh so both paths sign identically.
+SIGN_ID="${APPLE_SIGNING_IDENTITY:-${MINUTES_DEV_SIGNING_IDENTITY:--}}"
+echo "=== Signing ${APP_NAME}.app (identity: ${SIGN_ID}) ==="
+if [[ "$SIGN_ID" == "-" ]]; then
+    codesign --force --deep --sign - "$APP_BUNDLE"
+else
+    codesign --force --deep --options runtime --timestamp \
+        --entitlements tauri/src-tauri/entitlements.plist \
+        --sign "$SIGN_ID" \
+        "$APP_BUNDLE"
+fi
+
 echo "=== Re-signing bundled CLI sidecar with its own entitlements ==="
 # The CLI sidecar needs `com.apple.security.device.audio-input` so `minutes record`
 # from a terminal hits the macOS TCC mic prompt instead of silently failing. The
-# outer `cargo tauri build` (with `--deep` under the hood) clobbers any nested
-# entitlements, so we explicitly re-sign the sidecar AFTER the bundle is built.
-#
-# Ad-hoc signing fallback for OSS contributors: TCC entitlements are largely
-# ignored without a Team ID, so contributor builds will still see the TCC denial
-# on first terminal `minutes record`. The setup UI surfaces this when the
-# running bundle is ad-hoc-signed (detected via codesign -dv).
-SIGN_ID="${APPLE_SIGNING_IDENTITY:-${MINUTES_DEV_SIGNING_IDENTITY:--}}"
-APP_BUNDLE="target/release/bundle/macos/Minutes.app"
-# Tauri's bundler strips the target-triple suffix from externalBin names when
-# copying into the .app — the on-disk filename is `minutes`, not
-# `minutes-${HOST_TARGET}`. Both the package input ($HOST_TARGET file in
-# tauri/src-tauri/bin/) and the bundled output (plain `minutes`) are required.
+# outer `--deep` sign above clobbers nested entitlements, so re-sign the sidecar
+# afterwards. Tauri's bundler strips the target-triple from externalBin names, so
+# the on-disk filename is plain `minutes`. Ad-hoc-signed sidecars won't get
+# entitlements honored without a Team ID — that's expected for OSS/field builds.
 SIDECAR="${APP_BUNDLE}/Contents/MacOS/minutes"
 if [[ -f "$SIDECAR" ]]; then
-    codesign --force --options runtime \
-        --entitlements tauri/src-tauri/minutes-cli.entitlements \
-        --sign "$SIGN_ID" \
-        "$SIDECAR"
+    if [[ "$SIGN_ID" == "-" ]]; then
+        codesign --force --options runtime \
+            --entitlements tauri/src-tauri/minutes-cli.entitlements \
+            --sign - "$SIDECAR"
+    else
+        codesign --force --options runtime --timestamp \
+            --entitlements tauri/src-tauri/minutes-cli.entitlements \
+            --sign "$SIGN_ID" "$SIDECAR"
+    fi
     echo "  Signed sidecar with identity: $SIGN_ID"
 else
     echo "  WARNING: expected sidecar not found at $SIDECAR — skipping re-sign."
@@ -114,10 +130,24 @@ from pathlib import Path
 print(json.loads(Path("tauri/src-tauri/tauri.conf.json").read_text())["version"])
 PY
 )"
-./scripts/create-branded-dmg.sh \
-    --app target/release/bundle/macos/Minutes.app \
-    --version "$APP_VERSION" \
-    --output "target/release/bundle/dmg/Minutes_${APP_VERSION}_aarch64.dmg"
+
+# Package a shareable zip (ditto preserves macOS metadata + the codesignature).
+APP_ZIP="target/release/${APP_NAME// /-}-macOS-arm64-${APP_VERSION}.zip"
+echo "=== Packaging ${APP_ZIP} ==="
+rm -f "$APP_ZIP"
+ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ZIP"
+
+# Optional branded DMG (opt-in: ./scripts/build.sh --dmg). NOTE:
+# scripts/create-branded-dmg.sh still hardcodes the "Minutes.app" / "Minutes"
+# volume branding and needs a fork-branding pass before it emits a correct
+# "Minutes Madness" DMG; the zip above is the primary distributable.
+if [[ " $* " == *" --dmg "* ]]; then
+    ./scripts/create-branded-dmg.sh \
+        --app "$APP_BUNDLE" \
+        --version "$APP_VERSION" \
+        --output "target/release/bundle/dmg/${APP_NAME// /-}_${APP_VERSION}_aarch64.dmg" \
+        || echo "  DMG step failed (non-fatal); the zip is the primary artifact."
+fi
 
 echo "=== Signing + Installing CLI ==="
 mkdir -p ~/.local/bin
@@ -129,8 +159,9 @@ echo ""
 # Install to /Applications if --install flag is passed
 if [[ " $* " == *" --install "* ]]; then
     echo "=== Installing app to /Applications ==="
-    cp -rf target/release/bundle/macos/Minutes.app /Applications/
-    echo "  Installed to /Applications/Minutes.app"
+    rm -rf "/Applications/${APP_NAME}.app"
+    cp -rf "$APP_BUNDLE" /Applications/
+    echo "  Installed to /Applications/${APP_NAME}.app"
 fi
 
 echo "=== Done ==="
@@ -157,12 +188,13 @@ if [ -n "$RESOLVED" ] && [ "$RESOLVED_REAL" != "$EXPECTED_REAL" ]; then
         echo "     Fix: rm '$RESOLVED'"
     fi
 fi
-echo "  App:  target/release/bundle/macos/Minutes.app"
+echo "  App:  $APP_BUNDLE"
+echo "  Zip:  $APP_ZIP"
 echo ""
-if [ -d "/Applications/Minutes.app" ]; then
-    echo "  Relaunch: open /Applications/Minutes.app"
+if [ -d "/Applications/${APP_NAME}.app" ]; then
+    echo "  Relaunch: open \"/Applications/${APP_NAME}.app\""
 else
-    echo "  Launch: open target/release/bundle/macos/Minutes.app"
+    echo "  Launch: open \"$APP_BUNDLE\""
     echo "  Install: ./scripts/build.sh --install"
 fi
 echo "  Dev app (stable TCC identity): ./scripts/install-dev-app.sh"
