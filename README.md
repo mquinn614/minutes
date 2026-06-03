@@ -46,7 +46,7 @@ Neither is code-signed, so SmartScreen warns on first run — click **More info 
 
 1. **Open Minutes Madness** and create a bracket (or keep the default buzzwords).
 2. **Collect picks.** Use **Players → Invite** to share a code, or send people the picks page. Each player ranks the bracket; paste their code back via **Import picks**.
-3. **Pick your audio source** with the **🎙 / 🔊 Audio** button: *Microphone* for an in-person all-hands, *System audio* for a remote one. Watch the input meter to confirm it's hearing sound before you start.
+3. **Pick your audio source** with the **🎙 / 🔊 Audio** button. *Microphone* captures whatever it can hear — an in-person all-hands, or a remote call played out loud (e.g. on a speakerphone, even from a second computer). *System audio* taps this computer's own playback directly, so it catches a remote call on headphones with no second device (macOS only). Watch the input meter to confirm it's hearing sound before you start.
 4. **Start recording** when the meeting begins. Buzzwords light up and score in real time; click a player to overlay their bracket on yours.
 5. **No recording?** Use **Transcript Mode** to paste or load a transcript and score instantly.
 
