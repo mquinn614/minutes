@@ -1766,12 +1766,16 @@
       const champ = labelOf(current, champSeed);
       const champMentions = (res.counts && res.counts[champSeed]) || 0;
       const winner = (res.standings && res.standings.length) ? res.standings[0].name : null;
+      const plural = (n) => (n === 1 ? '' : 's');
       const headline = winner
         ? `<span class="who">${winner}</span> wins!`
         : `<span class="who">${champ}</span> wins the bracket!`;
+      // Lead with the champion's OWN mention count — the grand total (every
+      // buzzword combined) belongs to the bracket, not the winner, so it's
+      // labelled separately to avoid reading as "the champion was said N times".
       const sub = winner
-        ? `champion buzzword: <b>${champ}</b> · ${champMentions} mentions`
-        : `${res.total_mentions} total buzzword mentions`;
+        ? `champion buzzword: <b>${champ}</b> · ${champMentions} mention${plural(champMentions)}`
+        : `<b>${champMentions}</b> mention${plural(champMentions)} · ${res.total_mentions} across all buzzwords`;
       document.getElementById('fanfare-stage').innerHTML =
         `<div class="fanfare-card">` +
         `<div class="crown">🏆</div><div class="ff-label">Bracket Champion</div>` +
